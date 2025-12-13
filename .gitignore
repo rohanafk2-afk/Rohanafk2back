@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+
+# Telethon session files
+*.session
+*.session-journal
+
+# Crash dumps
+core
+core.*
