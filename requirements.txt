@@ -1,0 +1,10 @@
+python-telegram-bot==20.6
+selenium
+webdriver-manager
+nest_asyncio
+fake_useragent
+names
+psutil
+requests
+faker
+supabase
