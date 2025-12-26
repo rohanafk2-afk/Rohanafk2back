@@ -3615,30 +3615,103 @@ def _fill_zip_outside_stripe_if_present(driver, zip_code: str) -> None:
 # "Save my information for faster checkout" (Stripe Link) can force phone collection.
 # We always opt-out by ensuring it's unchecked.
 def _st_opt_out_faster_checkout(driver) -> None:
-    driver.switch_to.default_content()
-    candidates = [
-        # Most reliable: label text match
-        ("xpath", "//label[contains(., 'Save my information') and contains(., 'faster checkout')]/preceding::input[@type='checkbox'][1]"),
-        ("xpath", "//label[contains(., 'Save my information') and contains(., 'faster checkout')]//input[@type='checkbox']"),
-        ("xpath", "//label[contains(., 'Save my information')]/preceding::input[@type='checkbox'][1]"),
-        ("xpath", "//label[contains(., 'Save my information')]//input[@type='checkbox']"),
-        # Heuristics: Link/save-related checkbox
-        ("xpath", "//input[@type='checkbox' and (contains(@id,'link') or contains(@name,'link') or contains(@aria-label,'Link') or contains(@id,'save') or contains(@name,'save') or contains(@aria-label,'Save'))]"),
-    ]
-    for kind, sel in candidates:
+    """
+    Stripe Link sometimes renders the "Save my information for faster checkout" UI as:
+    - a normal <input type="checkbox"> (often hidden) + label, OR
+    - a custom element with role="checkbox" and aria-checked.
+    It may also be inside a Stripe/Link iframe. We search current document and all iframes.
+    """
+
+    def _try_uncheck_current_context() -> bool:
+        # Return True if we found the control (checked or unchecked) in this context.
+        js = r"""
+(() => {
+  const norm = (s) => (s || "").toLowerCase();
+  const textMatch = (t) => t.includes("save my information") && (t.includes("faster checkout") || t.includes("checkout"));
+
+  // 1) Prefer finding by visible text near the control
+  const nodes = Array.from(document.querySelectorAll("label, span, div, p, button"));
+  const hits = nodes.filter(n => textMatch(norm(n.innerText)));
+  for (const n of hits) {
+    const root = n.closest("form, section, div") || n.parentElement;
+    if (!root) continue;
+
+    const cb = root.querySelector("input[type='checkbox']");
+    if (cb) {
+      if (cb.checked) cb.click();
+      return true;
+    }
+
+    const roleCb = root.querySelector("[role='checkbox']");
+    if (roleCb) {
+      const checked = norm(roleCb.getAttribute("aria-checked"));
+      if (checked === "true" || checked === "mixed") roleCb.click();
+      return true;
+    }
+  }
+
+  // 2) Fallback: any role checkbox that looks like Link/save-info
+  const roleCbs = Array.from(document.querySelectorAll("[role='checkbox']"));
+  for (const el of roleCbs) {
+    const al = norm(el.getAttribute("aria-label"));
+    const checked = norm(el.getAttribute("aria-checked"));
+    if (al.includes("save") && al.includes("information")) {
+      if (checked === "true" || checked === "mixed") el.click();
+      return true;
+    }
+  }
+
+  // 3) Fallback: inputs with Link/save-ish attributes/labels
+  const inputs = Array.from(document.querySelectorAll("input[type='checkbox']"));
+  for (const cb of inputs) {
+    const name = `${norm(cb.id)} ${norm(cb.name)} ${norm(cb.getAttribute("aria-label"))}`;
+    const labelText = cb.labels && cb.labels.length ? norm(cb.labels[0].innerText) : "";
+    if (labelText.includes("save my information") || (name.includes("save") && (name.includes("info") || name.includes("information") || name.includes("link")))) {
+      if (cb.checked) cb.click();
+      return true;
+    }
+  }
+
+  return false;
+})()
+"""
         try:
-            el = driver.find_element(By.XPATH, sel) if kind == "xpath" else driver.find_element(By.CSS_SELECTOR, sel)
-            if el and el.is_selected():
-                try:
-                    driver.execute_script("arguments[0].click();", el)
-                except Exception:
-                    el.click()
-                time.sleep(0.2)
-            # If we found one candidate, don't keep clicking others
-            if el:
-                return
+            found = driver.execute_script(js)
+            return bool(found)
+        except Exception:
+            return False
+
+    # Try default content first
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    found_any = _try_uncheck_current_context()
+
+    # Try every iframe (Stripe often uses multiple nested frames)
+    try:
+        driver.switch_to.default_content()
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+    except Exception:
+        iframes = []
+
+    for frame in iframes:
+        try:
+            driver.switch_to.default_content()
+            driver.switch_to.frame(frame)
+            if _try_uncheck_current_context():
+                found_any = True
         except Exception:
             continue
+        finally:
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+
+    # Give the UI a moment to apply if we changed it
+    if found_any:
+        time.sleep(0.2)
 
 # ---------- ST admin screenshot helpers ----------
 def _st_md_safe(s: str) -> str:
