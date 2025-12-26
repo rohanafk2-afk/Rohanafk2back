@@ -7,4 +7,3 @@ names
 psutil
 requests
 faker
-supabase
