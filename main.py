@@ -957,7 +957,7 @@ async def off_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Command `{cmd}` has been disabled.", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
 
-# ==== 4.4.1 Admin Utilities: /ram, /cleanram, /restart, /backup ====
+# ==== 4.4.1 Admin Utilities: /ram, /cleanram, /backup ====
 def _fmt_bytes(n: float | int) -> str:
     try:
         n = float(n)
@@ -1132,21 +1132,6 @@ async def cleanram_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
 
-async def restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Restart the bot process. Admin only (works on Railway with restart policy)."""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Admin only command.", reply_to_message_id=update.message.message_id)
-        return
-
-    await update.message.reply_text("🔄 Restarting bot process...", reply_to_message_id=update.message.message_id)
-
-    async def _exit_soon():
-        await asyncio.sleep(1)
-        os._exit(0)  # Railway should restart the container/process
-
-    asyncio.create_task(_exit_soon())
-
-
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Zip and send all .py and .json files to admin."""
     if not is_admin(update.effective_user.id):
@@ -1229,7 +1214,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠️ *Admin Commands:*\n"
         "• /ram - Bot running details\n"
         "• /cleanram - Best-effort memory cleanup\n"
-        "• /restart - Restart bot process\n"
         "• /backup - Backup .py/.json files\n\n"
         "📝 *Card Format:*\n"
         "`CC|MM|YY|CVV` or `CC MM YY CVV`\n\n"
@@ -1238,12 +1222,60 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text, parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
 async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    await update.message.reply_text(f"🆔 Your Telegram ID: `{uid}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+    user = update.effective_user
+    uid = user.id
+
+    # Grade: S=admin, A=approved (any), D=not approved
+    if is_admin(uid):
+        grade = "S"
+    else:
+        is_any_approved = uid in approved_all or any(uid in approved_cmds[k] for k in CMD_KEYS)
+        grade = "A" if is_any_approved else "D"
+
+    name = " ".join([p for p in [user.first_name, user.last_name] if p]) or "N/A"
+    username = f"@{user.username}" if user.username else "N/A"
+
+    caption = (
+        "👤 *User Info*\n\n"
+        f"• *Name:* `{name}`\n"
+        f"• *Username:* `{username}`\n"
+        f"• *User ID:* `{uid}`\n"
+        f"• *Grade:* `{grade}`\n"
+    )
+
+    # Send profile photo if available, else a fallback GIF ("gift")
+    try:
+        photos = await context.bot.get_user_profile_photos(user_id=uid, limit=1)
+        if photos.total_count and photos.photos:
+            file_id = photos.photos[0][-1].file_id  # highest resolution of first photo set
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=file_id,
+                caption=caption,
+                parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id,
+            )
+            return
+    except Exception:
+        pass
+
+    try:
+        await context.bot.send_animation(
+            chat_id=update.effective_chat.id,
+            animation="https://media.giphy.com/media/JIX9t2j0ZTN9S/giphy.gif",
+            caption=caption,
+            parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id,
+        )
+    except Exception:
+        await update.message.reply_text(caption, parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime = format_timedelta(datetime.now() - start_time)
-    await update.message.reply_text(f"✅ Bot is running.\n⏱ Uptime: {uptime}", reply_to_message_id=update.message.message_id)
+    t0 = time.perf_counter()
+    msg = await update.message.reply_text("⏳ Checking status...", reply_to_message_id=update.message.message_id)
+    ping_ms = (time.perf_counter() - t0) * 1000.0
+    await msg.edit_text(f"✅ Bot is running.\n⏱ Uptime: {uptime}\n🏓 Ping: {ping_ms:.0f} ms")
 
 async def bin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1358,7 +1390,6 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/off <cmd> — Disable command",
             "/ram — Show RAM/CPU/Disk details",
             "/cleanram [kill] — Best-effort memory cleanup",
-            "/restart — Restart bot process",
             "/backup — Zip & send .py/.json files",
             f"\n✅ Approved (global): {len(approved_all)}",
         ]))
@@ -5082,7 +5113,6 @@ async def main():
         app.add_handler(CommandHandler("off", off_cmd))
         app.add_handler(CommandHandler("ram", ram_cmd))
         app.add_handler(CommandHandler("cleanram", cleanram_cmd))
-        app.add_handler(CommandHandler("restart", restart_cmd))
         app.add_handler(CommandHandler("backup", backup_cmd))
 
         # Auth commands
