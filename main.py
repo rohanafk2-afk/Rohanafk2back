@@ -1133,7 +1133,7 @@ async def cleanram_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Zip and send all .py and .json files to admin."""
+    """Zip and send project backups to admin."""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Admin only command.", reply_to_message_id=update.message.message_id)
         return
@@ -1157,7 +1157,7 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for fn in files:
                     if fn.endswith((".pyc", ".tmp")):
                         continue
-                    if not (fn.endswith(".py") or fn.endswith(".json")):
+                    if not (fn.endswith(".py") or fn.endswith(".json") or fn in ("Dockerfile", "Dockerfile.txt")):
                         continue
                     abs_path = os.path.join(root, fn)
                     rel_path = os.path.relpath(abs_path, base_dir)
@@ -1243,11 +1243,32 @@ async def id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• *Grade:* `{grade}`\n"
     )
 
-    # Send profile photo if available, else a fallback GIF ("gift")
+    # Send profile photo if available. If Telegram returns an animated/video profile file,
+    # try sending it as an animation first. Otherwise, fallback to a generic GIF ("gift").
     try:
         photos = await context.bot.get_user_profile_photos(user_id=uid, limit=1)
         if photos.total_count and photos.photos:
             file_id = photos.photos[0][-1].file_id  # highest resolution of first photo set
+            try:
+                f = await context.bot.get_file(file_id)
+                file_path = (getattr(f, "file_path", "") or "").lower()
+                is_animated = file_path.endswith((".mp4", ".gif", ".webm"))
+            except Exception:
+                is_animated = False
+
+            if is_animated:
+                try:
+                    await context.bot.send_animation(
+                        chat_id=update.effective_chat.id,
+                        animation=file_id,
+                        caption=caption,
+                        parse_mode="Markdown",
+                        reply_to_message_id=update.message.message_id,
+                    )
+                    return
+                except Exception:
+                    pass
+
             await context.bot.send_photo(
                 chat_id=update.effective_chat.id,
                 photo=file_id,
