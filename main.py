@@ -3558,6 +3558,10 @@ def _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=Fa
             ("id", "Field-cvcInput"),
             ("css", "input[name='cvc'], input[autocomplete='cc-csc']"),
         ]
+        postal_candidates = [
+            ("id", "Field-postalCodeInput"),
+            ("css", "input[name='postal'], input[name='postalCode'], input[autocomplete='postal-code']"),
+        ]
 
         def _fill(cands, value):
             els = []
@@ -3580,10 +3584,33 @@ def _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=Fa
             expiry_filled = _fill(expiry_candidates, expiry)
         if not cvv_filled:
             cvv_filled = _fill(cvc_candidates, cvv)
+        # Some Stripe forms require ZIP/postal code. We'll fill it later when available.
+        _fill(postal_candidates, _random_us_zip())
 
     driver.switch_to.default_content()
     if not (card_filled and expiry_filled and cvv_filled):
         raise Exception("❌ Failed to fill all Stripe fields")
+
+def _random_us_zip() -> str:
+    # Use known-valid US ZIPs (avoid placeholders like 12345).
+    return random.choice(["10001", "94105", "33101", "60601", "98101", "30301", "77002", "85001", "20001", "02210"])
+
+def _fill_zip_outside_stripe_if_present(driver, zip_code: str) -> None:
+    """Fill non-Stripe ZIP fields if the page has them (WooCommerce billing_postcode, etc.)."""
+    driver.switch_to.default_content()
+    for sel in ("billing_postcode", "address_postal_code", "postal_code", "zip"):
+        try:
+            el = driver.find_element(By.ID, sel)
+            el.click()
+            el.send_keys(Keys.CONTROL, "a")
+            el.send_keys(Keys.BACKSPACE)
+            el.send_keys(zip_code)
+            # Trigger blur/change
+            driver.execute_script("arguments[0].dispatchEvent(new Event('change', {bubbles:true}));", el)
+            driver.execute_script("arguments[0].dispatchEvent(new Event('blur', {bubbles:true}));", el)
+            return
+        except Exception:
+            continue
 
 # ---------- SINGLE CARD ----------
 async def st_single_main(card_input, update_dict):
@@ -3648,6 +3675,11 @@ async def st_single_main(card_input, update_dict):
                     pass
 
                 _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=False)
+                # Fill a random ZIP if the form asks for it (Stripe postal + any outside field)
+                try:
+                    _fill_zip_outside_stripe_if_present(driver, _random_us_zip())
+                except Exception:
+                    pass
                 wait.until(EC.element_to_be_clickable((By.ID, "place_order"))).click()
 
                 # wait for success or error message
@@ -3686,46 +3718,22 @@ async def st_single_main(card_input, update_dict):
                     f"🧑‍💻 **Checked by:** **{username}** [`{uid}`]"
                 )
                 await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=result_msg, parse_mode="Markdown")
-
-                # Send screenshot to admin after response is captured (for debugging)
-                try:
-                    screenshot_path = None
-                    try:
-                        fd, screenshot_path = tempfile.mkstemp(prefix="st_result_", suffix=".png")
-                        os.close(fd)
-                        driver.save_screenshot(screenshot_path)
-                        with open(screenshot_path, "rb") as img:
-                            await bot.send_photo(
-                                chat_id=BOT_ADMIN_ID,
-                                photo=img,
-                                caption=(
-                                    f"🧾 /st screenshot\n"
-                                    f"User: `{username}` `{uid}`\n"
-                                    f"Status: **{status}**\n"
-                                    f"Attempt: `{attempt}/3`\n"
-                                    f"Resp: `{response_text}`"
-                                ),
-                                parse_mode="Markdown",
-                            )
-                    finally:
-                        if screenshot_path and os.path.exists(screenshot_path):
-                            os.remove(screenshot_path)
-                except Exception:
-                    pass
                 return
 
             except Exception as e:
                 if attempt == 3:
-                    screenshot = "st_fail.png"
-                    driver.save_screenshot(screenshot)
                     await bot.edit_message_text(chat_id=chat_id, message_id=msg_id,
                         text=f"❌ Failed after 3 attempts.\nError: `{str(e)}`",
                         parse_mode="Markdown")
-                    await bot.send_photo(chat_id=BOT_ADMIN_ID,
-                        photo=open(screenshot, "rb"),
-                        caption=f"```\n{traceback.format_exc()}\n```",
-                        parse_mode="Markdown")
-                    os.remove(screenshot)
+                    # No screenshots: send trace to admin as text (best-effort)
+                    try:
+                        await bot.send_message(
+                            chat_id=BOT_ADMIN_ID,
+                            text=f"ST Error:\n```\n{traceback.format_exc()[:3500]}\n```",
+                            parse_mode="Markdown",
+                        )
+                    except Exception:
+                        pass
                     return
     finally:
         try:
@@ -3895,33 +3903,17 @@ async def st_batch_main(cards, update_dict):
         final_msg = "\n\n".join(consolidated) + f"\n\n🌐 Gateway: Stripe-Auth-1\n⏱ Took: {took}\n🧑‍💻 Checked by: **{username}** [`{uid}`]"
         await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=final_msg, parse_mode="Markdown")
 
-        # Send one end-of-run screenshot to admin (helps debug batch issues)
+    except Exception:
+        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="❌ Process failed.", parse_mode="Markdown")
+        # No screenshots: send trace to admin as text (best-effort)
         try:
-            screenshot_path = None
-            try:
-                fd, screenshot_path = tempfile.mkstemp(prefix="st_batch_result_", suffix=".png")
-                os.close(fd)
-                driver.save_screenshot(screenshot_path)
-                with open(screenshot_path, "rb") as img:
-                    await bot.send_photo(
-                        chat_id=BOT_ADMIN_ID,
-                        photo=img,
-                        caption=f"🧾 /st batch screenshot\nUser: `{username}` `{uid}`\nCards: `{len(cards)}`",
-                        parse_mode="Markdown",
-                    )
-            finally:
-                if screenshot_path and os.path.exists(screenshot_path):
-                    os.remove(screenshot_path)
+            await bot.send_message(
+                chat_id=BOT_ADMIN_ID,
+                text=f"ST Batch Error:\n```\n{traceback.format_exc()[:3500]}\n```",
+                parse_mode="Markdown",
+            )
         except Exception:
             pass
-
-    except Exception:
-        screenshot = "st_batch_fail.png"
-        driver.save_screenshot(screenshot)
-        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="❌ Process failed.", parse_mode="Markdown")
-        await bot.send_photo(chat_id=BOT_ADMIN_ID, photo=open(screenshot, "rb"),
-                             caption=f"```\n{traceback.format_exc()}\n```", parse_mode="Markdown")
-        os.remove(screenshot)
     finally:
         try:
             driver.quit()
