@@ -4863,72 +4863,136 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(f"❌ Error sending file: {str(e)[:100]}", reply_to_message_id=update.message.message_id)
 
 # ==== 15. Dispatcher Entry Point ====
+def _start_health_server_if_needed() -> None:
+    """
+    Railway "web" services expect the process to bind to $PORT.
+    This bot uses long-polling, so we start a tiny built-in HTTP server for health checks.
+    """
+    port_raw = os.environ.get("PORT")
+    if not port_raw:
+        return
+
+    try:
+        port = int(port_raw)
+    except ValueError:
+        print(f"⚠️ Invalid PORT value: {port_raw!r} (skipping health server)")
+        return
+
+    if port <= 0:
+        return
+
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            if self.path in ("/", "/health", "/healthz"):
+                body = b"ok"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"not found")
+
+        def log_message(self, format, *args):  # noqa: A002
+            # Keep logs clean on Railway
+            return
+
+    class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+        allow_reuse_address = True
+
+    try:
+        server = ReusableThreadingHTTPServer(("0.0.0.0", port), Handler)
+    except OSError as e:
+        print(f"⚠️ Failed to bind health server on 0.0.0.0:{port}: {e}")
+        return
+
+    thread = threading.Thread(target=server.serve_forever, name="health-server", daemon=True)
+    thread.start()
+    print(f"✅ Health server listening on 0.0.0.0:{port}")
+
+
 async def main():
     token = os.environ.get("BOT_TOKEN")
     if not token:
         print("❌ BOT_TOKEN environment variable is required")
         return
-    
-    # FIXED: Add connection timeout settings
-    app = ApplicationBuilder().token(token).connect_timeout(30.0).read_timeout(30.0).pool_timeout(30.0).build()
 
-    # Load BIN databases at startup
+    _start_health_server_if_needed()
+
+    # Load BIN databases once at startup
     load_bin_databases()
-    
-    # Basic commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("cmds", cmds_cmd))
-    app.add_handler(CommandHandler("id", id_cmd))
-    app.add_handler(CommandHandler("bin", bin_cmd))
-    app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("sort", sort_cmd))
-    app.add_handler(CommandHandler("clean", clean_cmd))
-    
-    # New commands
-    app.add_handler(CommandHandler("num", num_cmd))
-    app.add_handler(CommandHandler("adhar", adhar_cmd))
-    
-    # Callback handlers - FIXED PATTERNS with shorter prefixes
-    app.add_handler(CallbackQueryHandler(sort_callback, pattern="^s_"))
-    app.add_handler(CallbackQueryHandler(clean_callback, pattern="^c_"))
-    
-    # Admin commands
-    app.add_handler(CommandHandler("approve", approve))
-    app.add_handler(CommandHandler("unapprove", unapprove))
-    app.add_handler(CommandHandler("remove", remove))
-    app.add_handler(CommandHandler("ban", ban))
-    app.add_handler(CommandHandler("unban", unban))
-    app.add_handler(CommandHandler("on", on_cmd))
-    app.add_handler(CommandHandler("off", off_cmd))
-    
-    # Auth commands
-    app.add_handler(CommandHandler("kill", kill_cmd))
-    app.add_handler(CommandHandler("kd", kd_cmd))
-    app.add_handler(CommandHandler("ko", ko_cmd))
-    app.add_handler(CommandHandler("st", st_cmd))
-    app.add_handler(CommandHandler("au", au_cmd))
-    app.add_handler(CommandHandler("bt", bt_cmd))
-    app.add_handler(CommandHandler("chk", chk_cmd))
-    
-    # Text message handler for bin search
-    from telegram.ext import MessageHandler, filters
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
-    print("🤖 Bot is running...")
-    print(f"✅ Loaded {len(bin_cache)} BINs from database")
-    print(f"✅ Supabase connected: {SUPABASE_URL}")
-    
-    # FIXED: Add error handling for polling
-    try:
-        await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    except Exception as e:
-        print(f"❌ Bot polling error: {e}")
-        # Try to restart after delay
-        import asyncio
-        await asyncio.sleep(5)
-        print("🔄 Restarting bot...")
-        await main()
+    # If polling crashes (network hiccups, Telegram issues, etc.), restart without recursion.
+    while True:
+        # FIXED: Add connection timeout settings
+        app = (
+            ApplicationBuilder()
+            .token(token)
+            .connect_timeout(30.0)
+            .read_timeout(30.0)
+            .pool_timeout(30.0)
+            .build()
+        )
+
+        # Basic commands
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("help", help_cmd))
+        app.add_handler(CommandHandler("cmds", cmds_cmd))
+        app.add_handler(CommandHandler("id", id_cmd))
+        app.add_handler(CommandHandler("bin", bin_cmd))
+        app.add_handler(CommandHandler("status", status_cmd))
+        app.add_handler(CommandHandler("sort", sort_cmd))
+        app.add_handler(CommandHandler("clean", clean_cmd))
+
+        # New commands
+        app.add_handler(CommandHandler("num", num_cmd))
+        app.add_handler(CommandHandler("adhar", adhar_cmd))
+
+        # Callback handlers - FIXED PATTERNS with shorter prefixes
+        app.add_handler(CallbackQueryHandler(sort_callback, pattern="^s_"))
+        app.add_handler(CallbackQueryHandler(clean_callback, pattern="^c_"))
+
+        # Admin commands
+        app.add_handler(CommandHandler("approve", approve))
+        app.add_handler(CommandHandler("unapprove", unapprove))
+        app.add_handler(CommandHandler("remove", remove))
+        app.add_handler(CommandHandler("ban", ban))
+        app.add_handler(CommandHandler("unban", unban))
+        app.add_handler(CommandHandler("on", on_cmd))
+        app.add_handler(CommandHandler("off", off_cmd))
+
+        # Auth commands
+        app.add_handler(CommandHandler("kill", kill_cmd))
+        app.add_handler(CommandHandler("kd", kd_cmd))
+        app.add_handler(CommandHandler("ko", ko_cmd))
+        app.add_handler(CommandHandler("st", st_cmd))
+        app.add_handler(CommandHandler("au", au_cmd))
+        app.add_handler(CommandHandler("bt", bt_cmd))
+        app.add_handler(CommandHandler("chk", chk_cmd))
+
+        # Text message handler for bin search
+        from telegram.ext import MessageHandler, filters
+
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+
+        print("🤖 Bot is running...")
+        print(f"✅ Loaded {len(bin_cache)} BINs from database")
+        print(f"✅ Supabase connected: {SUPABASE_URL}")
+
+        try:
+            await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+            return
+        except Exception as e:
+            print(f"❌ Bot polling error: {e}")
+            await asyncio.sleep(5)
+            print("🔄 Restarting bot polling...")
 
 if __name__ == "__main__":
     asyncio.run(main())
