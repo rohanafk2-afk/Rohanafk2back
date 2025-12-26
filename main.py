@@ -11,6 +11,8 @@ import requests
 import string
 import tempfile
 import shutil
+import gc
+import zipfile
 from datetime import datetime
 from multiprocessing import Process
 from io import BytesIO, StringIO
@@ -929,7 +931,7 @@ async def on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     cmd_status[cmd] = True
-    save_users()  # FIXED: Save to Supabase immediately
+    save_users()
     
     await update.message.reply_text(f"✅ Command `{cmd}` has been enabled.", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
@@ -950,9 +952,250 @@ async def off_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     cmd_status[cmd] = False
-    save_users()  # FIXED: Save to Supabase immediately
+    save_users()
     
     await update.message.reply_text(f"✅ Command `{cmd}` has been disabled.", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+
+
+# ==== 4.4.1 Admin Utilities: /ram, /cleanram, /restart, /backup ====
+def _fmt_bytes(n: float | int) -> str:
+    try:
+        n = float(n)
+    except Exception:
+        return "N/A"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    i = 0
+    while n >= 1024 and i < len(units) - 1:
+        n /= 1024.0
+        i += 1
+    if i == 0:
+        return f"{int(n)} {units[i]}"
+    return f"{n:.2f} {units[i]}"
+
+
+async def ram_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show runtime stats (RAM/CPU/Disk/Uptime). Admin only."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin only command.", reply_to_message_id=update.message.message_id)
+        return
+
+    uptime = format_timedelta(datetime.now() - start_time)
+    proc = psutil.Process(os.getpid())
+
+    # CPU
+    cpu_count = psutil.cpu_count(logical=True) or 0
+    cpu_phys = psutil.cpu_count(logical=False) or 0
+    try:
+        load1, load5, load15 = os.getloadavg()
+        load_txt = f"{load1:.2f}, {load5:.2f}, {load15:.2f}"
+    except Exception:
+        load_txt = "N/A"
+
+    # Memory
+    vm = psutil.virtual_memory()
+    sm = psutil.swap_memory()
+    pm = proc.memory_info()
+
+    # Disk ("ROM" in your wording)
+    try:
+        root_du = shutil.disk_usage("/")
+        root_disk = f"{_fmt_bytes(root_du.used)} / {_fmt_bytes(root_du.total)} ({(root_du.used / root_du.total * 100.0):.1f}%)"
+    except Exception:
+        root_disk = "N/A"
+
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = "/"
+
+    try:
+        cwd_du = shutil.disk_usage(cwd)
+        cwd_disk = f"{_fmt_bytes(cwd_du.used)} / {_fmt_bytes(cwd_du.total)} ({(cwd_du.used / cwd_du.total * 100.0):.1f}%)"
+    except Exception:
+        cwd_disk = "N/A"
+
+    # Process details
+    try:
+        threads = proc.num_threads()
+    except Exception:
+        threads = "N/A"
+    try:
+        fds = proc.num_fds()
+    except Exception:
+        fds = "N/A"
+
+    text = (
+        "🧠 *Bot Runtime Details*\n\n"
+        f"⏱ *Uptime:* `{uptime}`\n"
+        f"🖥 *Platform:* `{platform.platform()}`\n"
+        f"🐍 *Python:* `{platform.python_version()}`\n"
+        f"🧩 *PID:* `{os.getpid()}`\n\n"
+        "⚙️ *CPU*\n"
+        f"• vCPU (logical): `{cpu_count}`\n"
+        f"• CPU (physical): `{cpu_phys}`\n"
+        f"• Load avg (1/5/15): `{load_txt}`\n\n"
+        "💾 *RAM*\n"
+        f"• Total: `{_fmt_bytes(vm.total)}`\n"
+        f"• Used: `{_fmt_bytes(vm.used)}` ({vm.percent}%)\n"
+        f"• Available: `{_fmt_bytes(vm.available)}`\n"
+        f"• Process RSS: `{_fmt_bytes(pm.rss)}`\n"
+        f"• Process VMS: `{_fmt_bytes(pm.vms)}`\n"
+        f"• Threads: `{threads}`\n"
+        f"• Open FDs: `{fds}`\n\n"
+        "🧷 *Swap*\n"
+        f"• Total: `{_fmt_bytes(sm.total)}`\n"
+        f"• Used: `{_fmt_bytes(sm.used)}` ({sm.percent}%)\n\n"
+        "💽 *Disk*\n"
+        f"• `/`: `{root_disk}`\n"
+        f"• `{cwd}`: `{cwd_disk}`\n"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+
+
+def _kill_orphan_chrome_children() -> dict:
+    """
+    Best-effort cleanup: terminate chrome/chromedriver child processes.
+    This can free RAM if Selenium got stuck, but may interrupt running checks.
+    """
+    proc = psutil.Process(os.getpid())
+    killed = 0
+    failed = 0
+    targets = []
+    try:
+        targets = proc.children(recursive=True)
+    except Exception:
+        targets = []
+
+    for p in targets:
+        try:
+            name = (p.name() or "").lower()
+            if "chromedriver" not in name and "chrome" not in name:
+                continue
+            p.terminate()
+            killed += 1
+        except Exception:
+            failed += 1
+
+    # Give them a moment, then hard kill leftovers
+    try:
+        gone, alive = psutil.wait_procs(targets, timeout=2)
+        for p in alive:
+            try:
+                name = (p.name() or "").lower()
+                if "chromedriver" in name or "chrome" in name:
+                    p.kill()
+            except Exception:
+                failed += 1
+    except Exception:
+        pass
+
+    return {"terminated": killed, "failed": failed}
+
+
+async def cleanram_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Best-effort memory cleanup. Admin only."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin only command.", reply_to_message_id=update.message.message_id)
+        return
+
+    before = psutil.Process(os.getpid()).memory_info().rss
+
+    # Python-level cleanup
+    try:
+        gc.collect()
+    except Exception:
+        pass
+
+    # Clear a couple of known caches
+    try:
+        bin_cache.clear()
+    except Exception:
+        pass
+
+    killed_info = None
+    # Optional: /cleanram kill -> try to terminate chrome/chromedriver children
+    if context.args and context.args[0].lower().strip() in ("kill", "force"):
+        killed_info = _kill_orphan_chrome_children()
+
+    after = psutil.Process(os.getpid()).memory_info().rss
+    freed = before - after
+
+    msg = (
+        "🧹 *CleanRAM complete*\n"
+        f"• RSS before: `{_fmt_bytes(before)}`\n"
+        f"• RSS after: `{_fmt_bytes(after)}`\n"
+        f"• Freed (approx): `{_fmt_bytes(freed)}`\n"
+    )
+    if killed_info:
+        msg += f"• Chrome cleanup: terminated `{killed_info['terminated']}`, failed `{killed_info['failed']}`\n"
+    msg += "\n_Note: memory may not drop immediately due to allocator/OS behavior._"
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+
+
+async def restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Restart the bot process. Admin only (works on Railway with restart policy)."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin only command.", reply_to_message_id=update.message.message_id)
+        return
+
+    await update.message.reply_text("🔄 Restarting bot process...", reply_to_message_id=update.message.message_id)
+
+    async def _exit_soon():
+        await asyncio.sleep(1)
+        os._exit(0)  # Railway should restart the container/process
+
+    asyncio.create_task(_exit_soon())
+
+
+async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Zip and send all .py and .json files to admin."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin only command.", reply_to_message_id=update.message.message_id)
+        return
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_name = f"backup_{ts}.zip"
+
+    status = await update.message.reply_text("📦 Creating backup...", reply_to_message_id=update.message.message_id)
+
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(prefix="bot_backup_", suffix=".zip")
+        os.close(fd)
+
+        with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(base_dir):
+                # Skip junk folders
+                dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", ".venv", "venv", "node_modules")]
+
+                for fn in files:
+                    if fn.endswith((".pyc", ".tmp")):
+                        continue
+                    if not (fn.endswith(".py") or fn.endswith(".json")):
+                        continue
+                    abs_path = os.path.join(root, fn)
+                    rel_path = os.path.relpath(abs_path, base_dir)
+                    zf.write(abs_path, rel_path)
+
+        with open(tmp_path, "rb") as f:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=f,
+                filename=zip_name,
+                caption=f"✅ Backup created: `{zip_name}`",
+                parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id,
+            )
+        await status.edit_text("✅ Backup sent.")
+    except Exception as e:
+        await status.edit_text(f"❌ Backup failed: {str(e)[:200]}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 # ==== 4.5 Basic Bot Commands ====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -983,6 +1226,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /cmds - Command list\n"
         "• /id - Your Telegram ID\n"
         "• /status - Bot status\n\n"
+        "🛠️ *Admin Commands:*\n"
+        "• /ram - Bot running details\n"
+        "• /cleanram - Best-effort memory cleanup\n"
+        "• /restart - Restart bot process\n"
+        "• /backup - Backup .py/.json files\n\n"
         "📝 *Card Format:*\n"
         "`CC|MM|YY|CVV` or `CC MM YY CVV`\n\n"
         "⚠️ *Note:* Some commands require admin approval."
@@ -1108,6 +1356,10 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/unban <id> — Unban user",
             "/on <cmd> — Enable command",
             "/off <cmd> — Disable command",
+            "/ram — Show RAM/CPU/Disk details",
+            "/cleanram [kill] — Best-effort memory cleanup",
+            "/restart — Restart bot process",
+            "/backup — Zip & send .py/.json files",
             f"\n✅ Approved (global): {len(approved_all)}",
         ]))
 
@@ -4564,7 +4816,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         approved_cmds[cmd].add(uid)
 
     banned_users.discard(uid)
-    save_users()  # FIXED: Save to Supabase immediately
+    save_users()
     
     await update.message.reply_text(f"✅ Approved `{uid}` for `{cmd}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
@@ -4601,7 +4853,7 @@ async def unapprove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         approved_cmds[cmd].discard(uid)
 
-    save_users()  # FIXED: Save to Supabase immediately
+    save_users()
     
     await update.message.reply_text(f"🗑️ Revoked `{cmd}` from `{uid}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
@@ -4622,7 +4874,7 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for k in CMD_KEYS:
         approved_cmds[k].discard(uid)
     banned_users.discard(uid)
-    save_users()  # FIXED: Save to Supabase immediately
+    save_users()
     
     await update.message.reply_text(f"🗑️ Removed user `{uid}` from all lists", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
@@ -4643,7 +4895,7 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     approved_users.discard(uid)
     for k in CMD_KEYS:
         approved_cmds[k].discard(uid)
-    save_users()  # FIXED: Save to Supabase immediately
+    save_users()
     
     await update.message.reply_text(f"🚫 Banned user `{uid}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
@@ -4660,7 +4912,7 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     banned_users.discard(uid)
-    save_users()  # FIXED: Save to Supabase immediately
+    save_users()
     
     await update.message.reply_text(f"✅ Unbanned user `{uid}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
@@ -4828,6 +5080,10 @@ async def main():
         app.add_handler(CommandHandler("unban", unban))
         app.add_handler(CommandHandler("on", on_cmd))
         app.add_handler(CommandHandler("off", off_cmd))
+        app.add_handler(CommandHandler("ram", ram_cmd))
+        app.add_handler(CommandHandler("cleanram", cleanram_cmd))
+        app.add_handler(CommandHandler("restart", restart_cmd))
+        app.add_handler(CommandHandler("backup", backup_cmd))
 
         # Auth commands
         app.add_handler(CommandHandler("kill", kill_cmd))
