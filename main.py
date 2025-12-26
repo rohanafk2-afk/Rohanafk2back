@@ -3686,6 +3686,32 @@ async def st_single_main(card_input, update_dict):
                     f"🧑‍💻 **Checked by:** **{username}** [`{uid}`]"
                 )
                 await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=result_msg, parse_mode="Markdown")
+
+                # Send screenshot to admin after response is captured (for debugging)
+                try:
+                    screenshot_path = None
+                    try:
+                        fd, screenshot_path = tempfile.mkstemp(prefix="st_result_", suffix=".png")
+                        os.close(fd)
+                        driver.save_screenshot(screenshot_path)
+                        with open(screenshot_path, "rb") as img:
+                            await bot.send_photo(
+                                chat_id=BOT_ADMIN_ID,
+                                photo=img,
+                                caption=(
+                                    f"🧾 /st screenshot\n"
+                                    f"User: `{username}` `{uid}`\n"
+                                    f"Status: **{status}**\n"
+                                    f"Attempt: `{attempt}/3`\n"
+                                    f"Resp: `{response_text}`"
+                                ),
+                                parse_mode="Markdown",
+                            )
+                    finally:
+                        if screenshot_path and os.path.exists(screenshot_path):
+                            os.remove(screenshot_path)
+                except Exception:
+                    pass
                 return
 
             except Exception as e:
@@ -3868,6 +3894,26 @@ async def st_batch_main(cards, update_dict):
         took = f"{time.time() - start_time:.2f}s"
         final_msg = "\n\n".join(consolidated) + f"\n\n🌐 Gateway: Stripe-Auth-1\n⏱ Took: {took}\n🧑‍💻 Checked by: **{username}** [`{uid}`]"
         await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=final_msg, parse_mode="Markdown")
+
+        # Send one end-of-run screenshot to admin (helps debug batch issues)
+        try:
+            screenshot_path = None
+            try:
+                fd, screenshot_path = tempfile.mkstemp(prefix="st_batch_result_", suffix=".png")
+                os.close(fd)
+                driver.save_screenshot(screenshot_path)
+                with open(screenshot_path, "rb") as img:
+                    await bot.send_photo(
+                        chat_id=BOT_ADMIN_ID,
+                        photo=img,
+                        caption=f"🧾 /st batch screenshot\nUser: `{username}` `{uid}`\nCards: `{len(cards)}`",
+                        parse_mode="Markdown",
+                    )
+            finally:
+                if screenshot_path and os.path.exists(screenshot_path):
+                    os.remove(screenshot_path)
+        except Exception:
+            pass
 
     except Exception:
         screenshot = "st_batch_fail.png"
