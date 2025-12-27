@@ -35,8 +35,21 @@ from fake_useragent import UserAgent
 # ==== 2. Global Configs ====
 CHROME_PATH = "/usr/bin/google-chrome"
 CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-BOT_ADMIN_ID = int(os.environ.get("BOT_ADMIN_ID", "123456789"))
+BOT_TOKEN = os.environ.get("BOT_TOKEN") or ""
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(str(raw).strip())
+    except Exception:
+        print(f"⚠️ Invalid {name}={raw!r}; using default {default}")
+        return default
+
+
+BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
 
 nest_asyncio.apply()
 start_time = datetime.now()
@@ -5292,10 +5305,13 @@ def _start_health_server_if_needed() -> None:
 
 
 async def main():
+    # Ensure helpers/subprocesses always see the resolved token
+    global BOT_TOKEN
     token = os.environ.get("BOT_TOKEN")
     if not token:
         print("❌ BOT_TOKEN environment variable is required")
         return
+    BOT_TOKEN = token
 
     _start_health_server_if_needed()
 
