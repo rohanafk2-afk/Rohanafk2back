@@ -3884,10 +3884,16 @@ def _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=Fa
     import time
     deadline = time.time() + 15
     stripe_iframes = []
+    STRIPE_IFRAME_SEL = (
+        "iframe[name^='__privateStripeFrame'], "
+        "iframe[src*='stripe'], "
+        "iframe[src*='js.stripe.com'], "
+        "iframe[src*='m.stripe.network']"
+    )
     while time.time() < deadline:
         stripe_iframes = driver.find_elements(
             By.CSS_SELECTOR,
-            "iframe[name^='__privateStripeFrame'], iframe[src*='stripe'], iframe[src*='js.stripe.com'], iframe[src*='m.stripe.network']"
+            STRIPE_IFRAME_SEL
         )
         if stripe_iframes:
             break
@@ -3896,52 +3902,116 @@ def _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=Fa
         raise Exception("❌ Stripe fields did not load")
 
     card_filled = expiry_filled = cvv_filled = False
+    number_candidates = [
+        ("id", "Field-numberInput"),
+        ("css", "input[name='cardnumber'], input[autocomplete='cc-number']"),
+        ("css", "input[data-elements-stable-field-name='cardNumber'], input[name='cardNumber']"),
+        ("css", "input[aria-label*='card number' i], input[aria-label*='card' i][autocomplete='cc-number']"),
+        ("css", "input[placeholder*='1234' i]"),
+    ]
+    expiry_candidates = [
+        ("id", "Field-expiryInput"),
+        ("css", "input[name='exp-date'], input[autocomplete='cc-exp']"),
+        ("css", "input[data-elements-stable-field-name='cardExpiry'], input[name='cardExpiry']"),
+        ("css", "input[aria-label*='expiration' i], input[aria-label*='expiry' i]"),
+        ("css", "input[placeholder*='mm / yy' i], input[placeholder*='mm/yy' i]"),
+    ]
+    cvc_candidates = [
+        ("id", "Field-cvcInput"),
+        ("css", "input[name='cvc'], input[autocomplete='cc-csc']"),
+        ("css", "input[data-elements-stable-field-name='cardCvc'], input[name='cardCvc']"),
+        ("css", "input[aria-label*='security code' i], input[aria-label*='cvc' i], input[aria-label*='cvv' i]"),
+    ]
+    postal_candidates = [
+        ("id", "Field-postalCodeInput"),
+        ("css", "input[name='postal'], input[name='postalCode'], input[autocomplete='postal-code']"),
+        ("css", "input[data-elements-stable-field-name='postalCode'], input[name='billingPostalCode']"),
+        ("css", "input[aria-label*='zip' i], input[aria-label*='postal' i]"),
+    ]
+
+    def _pick_visible_first(elements):
+        for el in elements:
+            try:
+                if el.is_displayed() and el.is_enabled():
+                    return el
+            except Exception:
+                continue
+        return elements[0] if elements else None
+
+    def _fill(cands, value) -> bool:
+        els = []
+        for kind, sel in cands:
+            try:
+                els = driver.find_elements(By.ID, sel) if kind == "id" else driver.find_elements(By.CSS_SELECTOR, sel)
+            except Exception:
+                els = []
+            if els:
+                break
+        if not els:
+            return False
+        el = _pick_visible_first(els)
+        if not el:
+            return False
+        try:
+            el.click()
+        except Exception:
+            pass
+        if clear_first:
+            try:
+                el.send_keys(Keys.CONTROL, "a")
+                el.send_keys(Keys.BACKSPACE)
+            except Exception:
+                pass
+        try:
+            el.send_keys(value)
+            return True
+        except Exception:
+            return False
+
+    def _try_fill_current_context() -> None:
+        nonlocal card_filled, expiry_filled, cvv_filled
+        if not card_filled:
+            card_filled = _fill(number_candidates, card) or card_filled
+        if not expiry_filled:
+            expiry_filled = _fill(expiry_candidates, expiry) or expiry_filled
+        if not cvv_filled:
+            cvv_filled = _fill(cvc_candidates, cvv) or cvv_filled
+        # Some Stripe forms require ZIP/postal code. Best-effort.
+        _fill(postal_candidates, _random_us_zip())
+
+    # Try in each top-level Stripe frame; if it looks like a container, also try nested Stripe frames.
     for iframe in stripe_iframes:
         if card_filled and expiry_filled and cvv_filled:
             break
-        driver.switch_to.default_content()
-        driver.switch_to.frame(iframe)
+        try:
+            driver.switch_to.default_content()
+            driver.switch_to.frame(iframe)
+        except Exception:
+            continue
 
-        number_candidates = [
-            ("id", "Field-numberInput"),
-            ("css", "input[name='cardnumber'], input[autocomplete='cc-number']"),
-        ]
-        expiry_candidates = [
-            ("id", "Field-expiryInput"),
-            ("css", "input[name='exp-date'], input[autocomplete='cc-exp']"),
-        ]
-        cvc_candidates = [
-            ("id", "Field-cvcInput"),
-            ("css", "input[name='cvc'], input[autocomplete='cc-csc']"),
-        ]
-        postal_candidates = [
-            ("id", "Field-postalCodeInput"),
-            ("css", "input[name='postal'], input[name='postalCode'], input[autocomplete='postal-code']"),
-        ]
+        _try_fill_current_context()
+        if card_filled and expiry_filled and cvv_filled:
+            break
 
-        def _fill(cands, value):
-            els = []
-            for kind, sel in cands:
-                els = driver.find_elements(By.ID, sel) if kind == "id" else driver.find_elements(By.CSS_SELECTOR, sel)
-                if els:
-                    break
-            if not els:
-                return False
-            el = els[0]
-            if clear_first:
-                el.send_keys(Keys.CONTROL, "a")
-                el.send_keys(Keys.BACKSPACE)
-            el.send_keys(value)
-            return True
+        # If this is a Payment Element container, fields may be inside nested frames.
+        try:
+            nested_frames = driver.find_elements(By.CSS_SELECTOR, STRIPE_IFRAME_SEL)
+        except Exception:
+            nested_frames = []
 
-        if not card_filled:
-            card_filled = _fill(number_candidates, card)
-        if not expiry_filled:
-            expiry_filled = _fill(expiry_candidates, expiry)
-        if not cvv_filled:
-            cvv_filled = _fill(cvc_candidates, cvv)
-        # Some Stripe forms require ZIP/postal code. We'll fill it later when available.
-        _fill(postal_candidates, _random_us_zip())
+        for nf in nested_frames:
+            if card_filled and expiry_filled and cvv_filled:
+                break
+            try:
+                driver.switch_to.frame(nf)
+                _try_fill_current_context()
+            except Exception:
+                pass
+            finally:
+                try:
+                    driver.switch_to.parent_frame()
+                except Exception:
+                    pass
 
     driver.switch_to.default_content()
     if not (card_filled and expiry_filled and cvv_filled):
