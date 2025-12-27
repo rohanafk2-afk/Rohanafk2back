@@ -4365,14 +4365,64 @@ async def str_single_main(card_input, update_dict):
             except Exception:
                 pass
 
-        def _str_wait_admin_ajax_raw(drv, timeout=12):
+        def _str_collect_relevant_ajax_raw(drv, timeout=12):
             """
-            Collect the latest admin-ajax.php XHR/Fetch response (status + raw body).
-            Returns dict or None.
+            Collect XHR/Fetch network responses after submit and pick the most relevant one.
+            We include both:
+            - wp-admin/admin-ajax.php (but ignore common tracking actions like pys_get_pbid)
+            - wc-ajax endpoints (often used by WooCommerce/Stripe for add-payment-method)
+
+            Returns dict: {url, status, body} or None.
             """
             end = time.time() + timeout
             seen = set()
-            last = None
+            candidates = []
+
+            def _ignore_url(url: str) -> bool:
+                u = (url or "").lower()
+                # Ignore common tracking / pixel endpoints
+                if "action=pys_get_pbid" in u:
+                    return True
+                if "pys_" in u and "admin-ajax" in u:
+                    return True
+                if "facebook" in u or "google" in u or "doubleclick" in u:
+                    return True
+                return False
+
+            def _is_target_url(url: str) -> bool:
+                u = (url or "").lower()
+                if "admin-ajax" in u:
+                    return not _ignore_url(u)
+                if "wc-ajax" in u:
+                    return True
+                return False
+
+            def _score(url: str, body: str) -> int:
+                u = (url or "").lower()
+                b = (body or "").lower()
+                score = 0
+                # URL signals
+                if "stripe" in u or "wc_stripe" in u:
+                    score += 8
+                if "add_payment" in u or "payment_method" in u:
+                    score += 7
+                if "woocommerce" in u or "wc-ajax" in u:
+                    score += 4
+                if "admin-ajax" in u:
+                    score += 2
+                if _ignore_url(u):
+                    score -= 50
+                # Body signals
+                if b:
+                    if "success" in b or "approved" in b:
+                        score += 2
+                    if "error" in b or "declined" in b or "failed" in b:
+                        score += 2
+                    if "payment" in b and "method" in b:
+                        score += 2
+                    if "woocommerce" in b or "wc_" in b:
+                        score += 1
+                return score
 
             while time.time() < end:
                 try:
@@ -4386,45 +4436,68 @@ async def str_single_main(card_input, update_dict):
                         if msg.get("method") != "Network.responseReceived":
                             continue
                         params = msg.get("params", {}) or {}
+                        # Prefer filtering to XHR/Fetch responses only
+                        rtype = (params.get("type") or params.get("resourceType") or "").upper()
+                        if rtype and rtype not in ("XHR", "FETCH"):
+                            continue
                         resp = params.get("response", {}) or {}
                         url = resp.get("url", "") or ""
-                        if "admin-ajax" not in url:
+                        if not _is_target_url(url):
                             continue
                         req_id = params.get("requestId")
                         if not req_id or req_id in seen:
                             continue
                         seen.add(req_id)
-                        last = {
+                        candidates.append({
                             "requestId": req_id,
                             "url": url,
                             "status": int(resp.get("status", 0) or 0),
-                        }
+                        })
                     except Exception:
                         continue
 
-                if last:
-                    break
+                # Don't block with long sleeps; just yield briefly for more logs.
+                if candidates:
+                    time.sleep(0.12)
+                else:
+                    time.sleep(0.08)
 
-            if not last:
+            if not candidates:
                 return None
 
-            body = ""
-            try:
-                out = drv.execute_cdp_cmd("Network.getResponseBody", {"requestId": last["requestId"]})
-                body = (out or {}).get("body", "") or ""
-            except Exception:
+            # Evaluate candidates from newest -> oldest and choose best-scoring body.
+            best = None
+            best_score = -10**9
+            for c in reversed(candidates):
                 body = ""
+                try:
+                    out = drv.execute_cdp_cmd("Network.getResponseBody", {"requestId": c["requestId"]})
+                    body = (out or {}).get("body", "") or ""
+                except Exception:
+                    body = ""
+
+                # Skip empty bodies unless nothing else exists.
+                body_norm = (body or "").strip()
+                s = _score(c.get("url", ""), body_norm)
+                if body_norm:
+                    s += 1  # prefer non-empty
+
+                if s > best_score:
+                    best_score = s
+                    best = {
+                        "url": c.get("url", ""),
+                        "status": c.get("status", 0),
+                        "body": body,
+                    }
+
+            if not best:
+                return None
 
             # Telegram-safe trimming + markdown safety
-            body = _st_md_safe(body)
-            if len(body) > 3000:
-                body = body[:3000] + "\n... (truncated)"
-
-            return {
-                "url": last.get("url", ""),
-                "status": last.get("status", 0),
-                "body": body,
-            }
+            best["body"] = _st_md_safe(best.get("body", "") or "")
+            if len(best["body"]) > 3000:
+                best["body"] = best["body"][:3000] + "\n... (truncated)"
+            return best
 
         ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
         options = webdriver.ChromeOptions()
@@ -4525,6 +4598,12 @@ async def str_single_main(card_input, update_dict):
             wait.until(EC.element_to_be_clickable((By.ID, "place_order")))
         except Exception:
             pass
+        # Clear performance logs before submit so we only see post-submit requests
+        try:
+            driver.get_log("performance")
+        except Exception:
+            pass
+
         try:
             place_btn.click()
         except Exception:
@@ -4534,7 +4613,7 @@ async def str_single_main(card_input, update_dict):
         # Some flows return the result via admin-ajax instead of an on-page banner,
         # so we capture admin-ajax raw response right after submit.
         try:
-            ajax_debug = _str_wait_admin_ajax_raw(driver, timeout=12)
+            ajax_debug = _str_collect_relevant_ajax_raw(driver, timeout=14)
         except Exception:
             ajax_debug = None
 
@@ -4578,8 +4657,8 @@ async def str_single_main(card_input, update_dict):
             kind = None
             response_text = None
 
-        if not response_text and ajax_debug and (ajax_debug.get("body") or "").strip():
-            # Fallback to admin-ajax body when no banner appears.
+        # Prefer admin-ajax/wc-ajax body as the canonical response when available.
+        if ajax_debug and (ajax_debug.get("body") or "").strip():
             response_text = ajax_debug.get("body", "")
             kind = "ajax"
 
@@ -4593,6 +4672,10 @@ async def str_single_main(card_input, update_dict):
             status = "Declined"
         else:
             status = "Unknown"
+
+        # Keep response short enough for Telegram edit (admin gets the longer raw body)
+        if response_text and len(response_text) > 900:
+            response_text = response_text[:900] + " ... (truncated)"
 
         emoji = "✅" if status == "Approved" else ("❌" if status == "Declined" else "⚠️")
         took = f"{time.time() - start_time_local:.2f}s"
