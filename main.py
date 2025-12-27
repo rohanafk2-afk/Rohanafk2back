@@ -4938,6 +4938,67 @@ async def au_main(card_input, update_dict):
                     continue
             return False
 
+        def _fill_link_contact_fields(driver, email_value: str) -> None:
+            """
+            Stripe Link UI may require email/phone before enabling submit.
+            Best-effort fill any visible email/tel fields in the main document.
+            """
+            driver.switch_to.default_content()
+            # Email
+            try:
+                for sel in (
+                    "input[type='email']",
+                    "input[name*='email']",
+                    "input[id*='email']",
+                ):
+                    for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                        try:
+                            if not el.is_displayed() or not el.is_enabled():
+                                continue
+                            v = (el.get_attribute("value") or "").strip()
+                            if v:
+                                continue
+                            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                            el.click()
+                            el.send_keys(email_value)
+                            raise StopIteration
+                        except StopIteration:
+                            raise
+                        except Exception:
+                            continue
+            except StopIteration:
+                pass
+            except Exception:
+                pass
+
+            # Phone
+            phone_value = f"2015550{random.randint(100, 999)}"
+            try:
+                for sel in (
+                    "input[type='tel']",
+                    "input[name*='phone']",
+                    "input[id*='phone']",
+                ):
+                    for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                        try:
+                            if not el.is_displayed() or not el.is_enabled():
+                                continue
+                            v = (el.get_attribute("value") or "").strip()
+                            if v:
+                                continue
+                            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                            el.click()
+                            el.send_keys(phone_value)
+                            raise StopIteration
+                        except StopIteration:
+                            raise
+                        except Exception:
+                            continue
+            except StopIteration:
+                pass
+            except Exception:
+                pass
+
         ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
         options = webdriver.ChromeOptions()
         options.binary_location = CHROME_PATH
@@ -4991,11 +5052,48 @@ async def au_main(card_input, update_dict):
         except Exception:
             pass
 
+        # Some Stripe/Link flows require opting out of "faster checkout" + contact fields
+        try:
+            _st_opt_out_faster_checkout(driver)
+        except Exception:
+            pass
+        try:
+            _fill_link_contact_fields(driver, email)
+        except Exception:
+            pass
+
         # STEP 4: Scroll a bit and click Add Payment Method
         try:
-            driver.execute_script("window.scrollBy(0, 250);")
-            place_btn = wait.until(EC.element_to_be_clickable((By.ID, "place_order")))
-            place_btn.click()
+            from selenium.common.exceptions import ElementClickInterceptedException
+
+            driver.switch_to.default_content()
+            place_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", place_btn)
+            except Exception:
+                driver.execute_script("window.scrollBy(0, 250);")
+
+            # If Link overlays are open, ESC often dismisses them
+            try:
+                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+            except Exception:
+                pass
+
+            # Wait briefly for enablement (some pages disable submit until phone/email)
+            try:
+                WebDriverWait(driver, 6).until(
+                    lambda d: place_btn.is_enabled() and not place_btn.get_attribute("disabled")
+                )
+            except Exception:
+                pass
+
+            try:
+                place_btn.click()
+            except ElementClickInterceptedException:
+                try:
+                    driver.execute_script("arguments[0].click();", place_btn)
+                except Exception:
+                    ActionChains(driver).move_to_element(place_btn).click().perform()
             # Capture raw admin-ajax response (debug) right after submit
             try:
                 ajax_debug = _wait_admin_ajax_raw(driver, timeout=10)
