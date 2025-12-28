@@ -4324,35 +4324,40 @@ def run_ze_process(card_input, update_dict):
         bin_thread.start()
 
         driver.get("https://src.visa.com/login")
+        time.sleep(1)
         
-        # Wait for page and dismiss cookie - MUST work
-        try:
-            accept_btn = WebDriverWait(driver, 3).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[text()='Accept']"))
-            )
-            accept_btn.click()
-        except:
-            # Force remove cookie elements
-            driver.execute_script("""
-                var btns = document.querySelectorAll('button');
-                for (var i = 0; i < btns.length; i++) {
-                    if (btns[i].innerText.trim() === 'Accept' || btns[i].innerText.trim() === 'Reject all') {
-                        btns[i].click(); break;
-                    }
+        # FORCE remove cookie overlay - this blocks everything
+        driver.execute_script("""
+            // Remove the blocking overlay first
+            var overlay = document.getElementById('CookieReportsOverlay');
+            if (overlay) overlay.remove();
+            
+            // Click Accept button
+            var btns = document.querySelectorAll('button');
+            for (var i = 0; i < btns.length; i++) {
+                if (btns[i].innerText.trim() === 'Accept') {
+                    btns[i].click(); break;
                 }
-                // Remove any blocking overlays
-                document.querySelectorAll('[class*="cookie"], [id*="cookie"], [class*="banner"]').forEach(e => e.remove());
-            """)
+            }
+            
+            // Remove any remaining cookie-related elements
+            setTimeout(function() {
+                var overlay2 = document.getElementById('CookieReportsOverlay');
+                if (overlay2) overlay2.remove();
+            }, 200);
+        """)
         
-        time.sleep(0.3)
+        time.sleep(0.4)
+        
+        # Double-check overlay is gone
+        driver.execute_script("var o = document.getElementById('CookieReportsOverlay'); if(o) o.remove();")
 
         # Fill email
         email_field = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
         email_field.send_keys(get_random_email())
         
-        # Click Continue - wait for it to be clickable
-        continue_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]')))
-        continue_btn.click()
+        # Click Continue using JavaScript to bypass any remaining issues
+        driver.execute_script("document.querySelector('[data-testid=\"continue-button\"]').click();")
         
         time.sleep(0.7)
         
