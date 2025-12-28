@@ -4323,40 +4323,66 @@ def run_ze_process(card_input, update_dict):
         bin_thread = threading.Thread(target=fetch_bin, daemon=True)
         bin_thread.start()
 
+        COOKIE_FILE = "/tmp/visa_cookies.json"
+        
+        # First visit to set domain for cookies
         driver.get("https://src.visa.com/login")
-        time.sleep(1)
         
-        # FORCE remove cookie overlay - this blocks everything
-        driver.execute_script("""
-            // Remove the blocking overlay first
-            var overlay = document.getElementById('CookieReportsOverlay');
-            if (overlay) overlay.remove();
-            
-            // Click Accept button
-            var btns = document.querySelectorAll('button');
-            for (var i = 0; i < btns.length; i++) {
-                if (btns[i].innerText.trim() === 'Accept') {
-                    btns[i].click(); break;
-                }
-            }
-            
-            // Remove any remaining cookie-related elements
-            setTimeout(function() {
-                var overlay2 = document.getElementById('CookieReportsOverlay');
-                if (overlay2) overlay2.remove();
-            }, 200);
-        """)
+        # Try to load saved cookies
+        cookies_loaded = False
+        try:
+            import json
+            if os.path.exists(COOKIE_FILE):
+                with open(COOKIE_FILE, 'r') as f:
+                    cookies = json.load(f)
+                for cookie in cookies:
+                    try:
+                        driver.add_cookie(cookie)
+                    except:
+                        pass
+                cookies_loaded = True
+                driver.refresh()
+        except:
+            pass
         
-        time.sleep(0.4)
+        time.sleep(0.5)
         
-        # Double-check overlay is gone
+        # Check if cookie banner exists, if so accept and save cookies
+        try:
+            overlay = driver.find_element(By.ID, "CookieReportsOverlay")
+            if overlay:
+                # Need to accept cookies
+                driver.execute_script("""
+                    var overlay = document.getElementById('CookieReportsOverlay');
+                    if (overlay) overlay.remove();
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        if (btns[i].innerText.trim() === 'Accept') {
+                            btns[i].click(); break;
+                        }
+                    }
+                """)
+                time.sleep(0.5)
+                # Save cookies for future use
+                try:
+                    import json
+                    cookies = driver.get_cookies()
+                    with open(COOKIE_FILE, 'w') as f:
+                        json.dump(cookies, f)
+                except:
+                    pass
+        except:
+            # No overlay, cookies working!
+            pass
+        
+        # Remove any remaining overlay just in case
         driver.execute_script("var o = document.getElementById('CookieReportsOverlay'); if(o) o.remove();")
 
         # Fill email
         email_field = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
         email_field.send_keys(get_random_email())
         
-        # Click Continue using JavaScript to bypass any remaining issues
+        # Click Continue
         driver.execute_script("document.querySelector('[data-testid=\"continue-button\"]').click();")
         
         time.sleep(0.7)
