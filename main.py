@@ -5982,15 +5982,20 @@ def _parse_cards_fast(text: str) -> list:
     return cards
 
 def _organize_cards(cards: list) -> dict:
-    """Organize cards by BIN, month, year, brand"""
+    """Organize cards by BIN, month, year, brand, type, level, country, year+month"""
     result = {
         'by_bin': {},
         'by_month': {},
         'by_year': {},
         'by_brand': {},
+        'by_type': {},
+        'by_level': {},
+        'by_country': {},
+        'by_year_month': {},  # Format: "27_05" for 2027 May
         'all': cards
     }
     
+    # First pass: organize by basic fields
     for card in cards:
         # By BIN
         bin_num = card['bin']
@@ -6009,15 +6014,52 @@ def _organize_cards(cards: list) -> dict:
         if yy not in result['by_year']:
             result['by_year'][yy] = []
         result['by_year'][yy].append(card)
+        
+        # By year+month
+        ym_key = f"{yy}_{mm}"
+        if ym_key not in result['by_year_month']:
+            result['by_year_month'][ym_key] = []
+        result['by_year_month'][ym_key].append(card)
     
-    # Get brand info for top BINs
-    for bin_num in list(result['by_bin'].keys())[:50]:  # Limit to 50 BINs for speed
+    # Second pass: Get BIN info and organize by brand/type/level/country
+    bin_info_cache = {}
+    for bin_num in list(result['by_bin'].keys()):
         try:
             info_str, details = get_bin_info(bin_num)
-            brand = (details or {}).get('brand', 'UNKNOWN')
-            if brand not in result['by_brand']:
-                result['by_brand'][brand] = []
-            result['by_brand'][brand].extend(result['by_bin'][bin_num])
+            if not details:
+                continue
+            bin_info_cache[bin_num] = details
+            
+            # By Brand
+            brand = (details.get('brand') or 'UNKNOWN').upper()
+            if brand and brand != 'UNKNOWN':
+                if brand not in result['by_brand']:
+                    result['by_brand'][brand] = []
+                result['by_brand'][brand].extend(result['by_bin'][bin_num])
+            
+            # By Type (CREDIT, DEBIT, PREPAID)
+            card_type = (details.get('type') or 'UNKNOWN').upper()
+            if card_type and card_type != 'UNKNOWN':
+                if card_type not in result['by_type']:
+                    result['by_type'][card_type] = []
+                result['by_type'][card_type].extend(result['by_bin'][bin_num])
+            
+            # By Level (GOLD, PLATINUM, CLASSIC, etc.)
+            level = (details.get('level') or '').upper()
+            if level:
+                if level not in result['by_level']:
+                    result['by_level'][level] = []
+                result['by_level'][level].extend(result['by_bin'][bin_num])
+            
+            # By Country
+            country = details.get('country') or details.get('country_name') or ''
+            country_code = details.get('country_code') or ''
+            country_flag = details.get('country_flag') or ''
+            if country:
+                country_key = f"{country_flag} {country}" if country_flag else country
+                if country_key not in result['by_country']:
+                    result['by_country'][country_key] = []
+                result['by_country'][country_key].extend(result['by_bin'][bin_num])
         except:
             pass
     
@@ -6115,32 +6157,56 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Build stats
         bins_count = len(organized['by_bin'])
-        months = sorted(organized['by_month'].keys())
+        brands_count = len(organized['by_brand'])
+        types_count = len(organized['by_type'])
+        levels_count = len(organized['by_level'])
+        countries_count = len(organized['by_country'])
         years = sorted(organized['by_year'].keys())
         
-        # Create buttons
+        # Create buttons - Row 1: Download
         buttons = [
-            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")],
-            [
-                InlineKeyboardButton(f"🏦 By BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
-                InlineKeyboardButton(f"📅 By Month", callback_data=f"f_month:{session_id}")
-            ],
-            [
-                InlineKeyboardButton(f"📆 By Year", callback_data=f"f_year:{session_id}"),
-                InlineKeyboardButton("🔍 Search BIN", callback_data=f"f_search:{session_id}")
-            ],
-            [InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")]
+            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")]
         ]
+        
+        # Row 2: BIN & Brand
+        buttons.append([
+            InlineKeyboardButton(f"🏦 BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
+            InlineKeyboardButton(f"💳 Brand ({brands_count})", callback_data=f"f_brand:{session_id}")
+        ])
+        
+        # Row 3: Type & Level
+        buttons.append([
+            InlineKeyboardButton(f"🔖 Type ({types_count})", callback_data=f"f_type:{session_id}"),
+            InlineKeyboardButton(f"⭐ Level ({levels_count})", callback_data=f"f_level:{session_id}")
+        ])
+        
+        # Row 4: Country & Year+Month
+        buttons.append([
+            InlineKeyboardButton(f"🌍 Country ({countries_count})", callback_data=f"f_country:{session_id}"),
+            InlineKeyboardButton("📅 Year+Month", callback_data=f"f_ym:{session_id}")
+        ])
+        
+        # Row 5: Month & Year
+        buttons.append([
+            InlineKeyboardButton("📅 Month", callback_data=f"f_month:{session_id}"),
+            InlineKeyboardButton("📆 Year", callback_data=f"f_year:{session_id}")
+        ])
+        
+        # Row 6: Search & Clear
+        buttons.append([
+            InlineKeyboardButton("🔍 Search BIN", callback_data=f"f_search:{session_id}"),
+            InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")
+        ])
         
         await msg.edit_text(
             f"✅ *Filter Complete*\n\n"
             f"📊 *Results:*\n"
-            f"• Cards found: `{len(cards):,}`\n"
-            f"• Unique BINs: `{bins_count}`\n"
-            f"• Years: `{', '.join(years)}`\n"
-            f"• Months: `{len(months)}`\n\n"
-            f"⏱ *Time:* `{duration}s`\n"
-            f"👤 *User:* {_escape_md(uname)}",
+            f"• Cards: `{len(cards):,}`\n"
+            f"• BINs: `{bins_count}` | Brands: `{brands_count}`\n"
+            f"• Types: `{types_count}` | Levels: `{levels_count}`\n"
+            f"• Countries: `{countries_count}`\n"
+            f"• Years: `{', '.join(years)}`\n\n"
+            f"⏱ `{duration}s` 👤 {_escape_md(uname)}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -6320,6 +6386,263 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    # By Brand
+    elif action == "f_brand":
+        brands = sorted(organized['by_brand'].items(), key=lambda x: -len(x[1]))
+        
+        if not brands:
+            await query.answer("No brand data available")
+            return
+        
+        buttons = []
+        for brand, cards_list in brands[:15]:
+            buttons.append([InlineKeyboardButton(
+                f"💳 {brand} ({len(cards_list)})",
+                callback_data=f"f_getbrand:{session_id}:{brand[:20]}"
+            )])
+        
+        buttons.append([back_btn()])
+        
+        await query.edit_message_text(
+            "💳 *By Brand*\n\nTap to download:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+    
+    # Get specific brand
+    elif action == "f_getbrand":
+        brand = extra
+        cards_list = organized['by_brand'].get(brand, [])
+        
+        if not cards_list:
+            await query.answer("No cards for this brand")
+            return
+        
+        content = "\n".join([c['formatted'] for c in cards_list])
+        await query.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=f"brand_{brand}_{len(cards_list)}.txt",
+            caption=f"💳 Brand: {brand}\n📊 Cards: {len(cards_list)}"
+        )
+        return
+    
+    # By Type
+    elif action == "f_type":
+        types = sorted(organized['by_type'].items(), key=lambda x: -len(x[1]))
+        
+        if not types:
+            await query.answer("No type data available")
+            return
+        
+        buttons = []
+        for card_type, cards_list in types:
+            emoji = "💳" if card_type == "CREDIT" else "💵" if card_type == "DEBIT" else "🎫"
+            buttons.append([InlineKeyboardButton(
+                f"{emoji} {card_type} ({len(cards_list)})",
+                callback_data=f"f_gettype:{session_id}:{card_type}"
+            )])
+        
+        buttons.append([back_btn()])
+        
+        await query.edit_message_text(
+            "🔖 *By Card Type*\n\nTap to download:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+    
+    # Get specific type
+    elif action == "f_gettype":
+        card_type = extra
+        cards_list = organized['by_type'].get(card_type, [])
+        
+        if not cards_list:
+            await query.answer("No cards for this type")
+            return
+        
+        content = "\n".join([c['formatted'] for c in cards_list])
+        await query.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=f"type_{card_type}_{len(cards_list)}.txt",
+            caption=f"🔖 Type: {card_type}\n📊 Cards: {len(cards_list)}"
+        )
+        return
+    
+    # By Level
+    elif action == "f_level":
+        levels = sorted(organized['by_level'].items(), key=lambda x: -len(x[1]))
+        
+        if not levels:
+            await query.answer("No level data available")
+            return
+        
+        buttons = []
+        for level, cards_list in levels[:15]:
+            buttons.append([InlineKeyboardButton(
+                f"⭐ {level} ({len(cards_list)})",
+                callback_data=f"f_getlevel:{session_id}:{level[:20]}"
+            )])
+        
+        buttons.append([back_btn()])
+        
+        await query.edit_message_text(
+            "⭐ *By Card Level*\n\nTap to download:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+    
+    # Get specific level
+    elif action == "f_getlevel":
+        level = extra
+        cards_list = organized['by_level'].get(level, [])
+        
+        if not cards_list:
+            await query.answer("No cards for this level")
+            return
+        
+        content = "\n".join([c['formatted'] for c in cards_list])
+        await query.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=f"level_{level}_{len(cards_list)}.txt",
+            caption=f"⭐ Level: {level}\n📊 Cards: {len(cards_list)}"
+        )
+        return
+    
+    # By Country
+    elif action == "f_country":
+        countries = sorted(organized['by_country'].items(), key=lambda x: -len(x[1]))
+        
+        if not countries:
+            await query.answer("No country data available")
+            return
+        
+        buttons = []
+        for country, cards_list in countries[:15]:
+            # Use first 20 chars of country name for callback data
+            country_short = country.replace(" ", "_")[:20]
+            buttons.append([InlineKeyboardButton(
+                f"{country} ({len(cards_list)})",
+                callback_data=f"f_getcountry:{session_id}:{country_short}"
+            )])
+        
+        buttons.append([back_btn()])
+        
+        await query.edit_message_text(
+            "🌍 *By Country*\n\nTap to download:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+    
+    # Get specific country
+    elif action == "f_getcountry":
+        country_short = extra.replace("_", " ") if extra else ""
+        # Find matching country
+        cards_list = []
+        country_full = country_short
+        for country, cl in organized['by_country'].items():
+            if country.replace(" ", "_")[:20] == extra:
+                cards_list = cl
+                country_full = country
+                break
+        
+        if not cards_list:
+            await query.answer("No cards for this country")
+            return
+        
+        content = "\n".join([c['formatted'] for c in cards_list])
+        await query.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=f"country_{len(cards_list)}.txt",
+            caption=f"🌍 Country: {country_full}\n📊 Cards: {len(cards_list)}"
+        )
+        return
+    
+    # By Year+Month
+    elif action == "f_ym":
+        # First show years to select
+        years = sorted(organized['by_year'].keys())
+        
+        buttons = []
+        row = []
+        for yy in years:
+            count = len(organized['by_year'][yy])
+            row.append(InlineKeyboardButton(f"20{yy} ({count})", callback_data=f"f_ymyear:{session_id}:{yy}"))
+            if len(row) == 3:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        
+        buttons.append([back_btn()])
+        
+        await query.edit_message_text(
+            "📅 *Year+Month Filter*\n\nFirst, select a year:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+    
+    # Year+Month - year selected, show months
+    elif action == "f_ymyear":
+        yy = extra
+        month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        
+        # Get months for this year
+        buttons = []
+        row = []
+        for mm in ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']:
+            ym_key = f"{yy}_{mm}"
+            cards_list = organized['by_year_month'].get(ym_key, [])
+            if cards_list:
+                name = month_names[int(mm)]
+                row.append(InlineKeyboardButton(
+                    f"{name} ({len(cards_list)})",
+                    callback_data=f"f_getym:{session_id}:{ym_key}"
+                ))
+                if len(row) == 3:
+                    buttons.append(row)
+                    row = []
+        if row:
+            buttons.append(row)
+        
+        if not buttons:
+            await query.answer("No cards for this year")
+            return
+        
+        buttons.append([InlineKeyboardButton("⬅️ Back to Years", callback_data=f"f_ym:{session_id}")])
+        buttons.append([back_btn()])
+        
+        await query.edit_message_text(
+            f"📅 *Year 20{yy}*\n\nSelect month:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+    
+    # Get specific year+month
+    elif action == "f_getym":
+        ym_key = extra  # Format: "27_05"
+        cards_list = organized['by_year_month'].get(ym_key, [])
+        
+        if not cards_list:
+            await query.answer("No cards for this period")
+            return
+        
+        yy, mm = ym_key.split("_")
+        month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        month_name = month_names[int(mm)] if int(mm) <= 12 else mm
+        
+        content = "\n".join([c['formatted'] for c in cards_list])
+        await query.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=f"20{yy}_{month_name}_{len(cards_list)}.txt",
+            caption=f"📅 Period: {month_name} 20{yy}\n📊 Cards: {len(cards_list)}"
+        )
+        return
+    
     # Search BIN
     elif action == "f_search":
         context.user_data[f"filter_search_{query.from_user.id}"] = session_id
@@ -6344,26 +6667,42 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "f_back":
         cards = organized['all']
         bins_count = len(organized['by_bin'])
+        brands_count = len(organized['by_brand'])
+        types_count = len(organized['by_type'])
+        levels_count = len(organized['by_level'])
+        countries_count = len(organized['by_country'])
         years = sorted(organized['by_year'].keys())
-        months = organized['by_month']
         
         buttons = [
-            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")],
-            [
-                InlineKeyboardButton(f"🏦 By BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
-                InlineKeyboardButton(f"📅 By Month", callback_data=f"f_month:{session_id}")
-            ],
-            [
-                InlineKeyboardButton(f"📆 By Year", callback_data=f"f_year:{session_id}"),
-                InlineKeyboardButton("🔍 Search BIN", callback_data=f"f_search:{session_id}")
-            ],
-            [InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")]
+            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")]
         ]
+        buttons.append([
+            InlineKeyboardButton(f"🏦 BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
+            InlineKeyboardButton(f"💳 Brand ({brands_count})", callback_data=f"f_brand:{session_id}")
+        ])
+        buttons.append([
+            InlineKeyboardButton(f"🔖 Type ({types_count})", callback_data=f"f_type:{session_id}"),
+            InlineKeyboardButton(f"⭐ Level ({levels_count})", callback_data=f"f_level:{session_id}")
+        ])
+        buttons.append([
+            InlineKeyboardButton(f"🌍 Country ({countries_count})", callback_data=f"f_country:{session_id}"),
+            InlineKeyboardButton("📅 Year+Month", callback_data=f"f_ym:{session_id}")
+        ])
+        buttons.append([
+            InlineKeyboardButton("📅 Month", callback_data=f"f_month:{session_id}"),
+            InlineKeyboardButton("📆 Year", callback_data=f"f_year:{session_id}")
+        ])
+        buttons.append([
+            InlineKeyboardButton("🔍 Search BIN", callback_data=f"f_search:{session_id}"),
+            InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")
+        ])
         
         await query.edit_message_text(
             f"✅ *Filter Results*\n\n"
             f"• Cards: `{len(cards):,}`\n"
-            f"• BINs: `{bins_count}`\n"
+            f"• BINs: `{bins_count}` | Brands: `{brands_count}`\n"
+            f"• Types: `{types_count}` | Levels: `{levels_count}`\n"
+            f"• Countries: `{countries_count}`\n"
             f"• Years: `{', '.join(years)}`\n\n"
             f"👤 {_escape_md(session['user'])}",
             parse_mode="Markdown",
