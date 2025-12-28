@@ -4132,7 +4132,7 @@ async def dd_cmd(update, context):
 
 # ==== 7.7 /ze Command (Killed v7 — FASTEST, 6 CVV attempts, max optimizations) ==== #
 def run_ze_process(card_input, update_dict):
-    import os, random, traceback, requests, time
+    import os, random, traceback, requests, time, threading
     from selenium import webdriver
     from selenium.webdriver.chrome.service import Service
     from selenium.webdriver.common.by import By
@@ -4311,6 +4311,18 @@ def run_ze_process(card_input, update_dict):
         wrong_cvv = get_wrong_cvv(real_cvv)
         first_name, last_name, address, city, state, zip_code, phone = get_fake_data()
 
+        # Start BIN lookup in parallel thread
+        bin_result = {"info": "Unavailable", "flag": ""}
+        def fetch_bin():
+            try:
+                info, flag = get_bin_info_local(cc[:6])
+                bin_result["info"] = info
+                bin_result["flag"] = flag
+            except:
+                pass
+        bin_thread = threading.Thread(target=fetch_bin, daemon=True)
+        bin_thread.start()
+
         driver.get("https://src.visa.com/login")
 
         # Dismiss cookie + fill email in one go
@@ -4428,8 +4440,9 @@ def run_ze_process(card_input, update_dict):
             except:
                 pass
 
-        # Get BIN info at end (non-blocking)
-        bin_info, bin_flag = get_bin_info_local(cc[:6])
+        # Wait for BIN thread (should be done by now)
+        bin_thread.join(timeout=0.5)
+        bin_info, bin_flag = bin_result["info"], bin_result["flag"]
         
         duration = round(time.time() - start, 2)
         edit_message(
