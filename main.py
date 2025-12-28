@@ -4303,29 +4303,43 @@ def run_ze_process(card_input, update_dict):
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(10)
-        wait = WebDriverWait(driver, 1.5)  # FASTEST - 1.5s timeout
+        wait = WebDriverWait(driver, 2)  # Slightly increased for reliability
 
         driver.get("https://src.visa.com/login")
 
-        # Quick cookie dismiss
+        # Dismiss cookie overlay - multiple methods
+        time.sleep(0.5)
         try:
-            btn = driver.find_element(By.CSS_SELECTOR, ".wscrOk")
-            driver.execute_script("arguments[0].click();", btn)
+            # Try clicking the OK button
+            driver.execute_script("""
+                var btn = document.querySelector('.wscrOk, .cookie-accept, [data-testid="accept-cookies"], #onetrust-accept-btn-handler');
+                if (btn) btn.click();
+                // Also try to remove overlay directly
+                var overlay = document.getElementById('CookieReportsOverlay');
+                if (overlay) overlay.remove();
+                var overlays = document.querySelectorAll('[id*="Cookie"], [class*="cookie"], [id*="consent"]');
+                overlays.forEach(function(el) { el.style.display = 'none'; });
+            """)
         except Exception:
             pass
+        
+        time.sleep(0.3)
 
-        # Fill email and proceed
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
-        driver.find_element(By.CSS_SELECTOR, '[data-testid="continue-button"]').click()
+        # Fill email and proceed using JS
+        email_field = wait.until(EC.presence_of_element_located((By.ID, "email-input")))
+        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles: true}));", email_field, get_random_email())
+        driver.execute_script("document.querySelector('[data-testid=\"continue-button\"]').click();")
         
-        time.sleep(0.3)  # Minimal wait
+        time.sleep(0.5)  # Wait for next page
         
+        # Use JS click for checkbox to bypass any overlays
         try:
-            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
+            checkbox = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]')))
+            driver.execute_script("arguments[0].click();", checkbox)
         except:
-            driver.find_element(By.CSS_SELECTOR, '[data-testid="terms-checkbox"]').click()
+            driver.execute_script("document.querySelector('[data-testid=\"terms-checkbox\"]').click();")
         
-        driver.find_element(By.CSS_SELECTOR, '[data-testid="next-button"]').click()
+        driver.execute_script("document.querySelector('[data-testid=\"next-button\"]').click();")
 
         cc, mm, yy, real_cvv = split_card(card_input)
         bin_info, bin_flag = get_bin_info_local(cc[:6])
