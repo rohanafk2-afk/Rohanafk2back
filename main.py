@@ -13,6 +13,7 @@ import tempfile
 import shutil
 import gc
 import zipfile
+import sys
 from datetime import datetime
 from multiprocessing import Process
 from io import BytesIO, StringIO
@@ -36,6 +37,7 @@ from fake_useragent import UserAgent
 CHROME_PATH = "/usr/bin/google-chrome"
 CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
 BOT_TOKEN = os.environ.get("BOT_TOKEN") or ""
+APP_VERSION = os.environ.get("APP_VERSION") or os.environ.get("BOT_VERSION") or "dev"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1230,7 +1232,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /help - This help message\n"
         "• /cmds - Command list\n"
         "• /id - Your Telegram ID\n"
-        "• /status - Bot status\n\n"
+        "• /status - Bot status\n"
+        "• /version - Bot version info\n\n"
         "🛠️ *Admin Commands:*\n"
         "• /ram - Bot running details\n"
         "• /cleanram - Best-effort memory cleanup\n"
@@ -1317,6 +1320,25 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Checking status...", reply_to_message_id=update.message.message_id)
     ping_ms = (time.perf_counter() - t0) * 1000.0
     await msg.edit_text(f"✅ Bot is running.\n⏱ Uptime: {uptime}\n🏓 Ping: {ping_ms:.0f} ms")
+
+async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Public command: show build/runtime version info."""
+    uptime = format_timedelta(datetime.now() - start_time)
+    py = sys.version.split()[0]
+    plat = f"{platform.system()} {platform.release()}"
+    await update.message.reply_text(
+        "\n".join(
+            [
+                "ℹ️ *Version Info*",
+                f"• *App:* `{APP_VERSION}`",
+                f"• *Python:* `{py}`",
+                f"• *Platform:* `{plat}`",
+                f"• *Uptime:* `{uptime}`",
+            ]
+        ),
+        parse_mode="Markdown",
+        reply_to_message_id=update.message.message_id,
+    )
 
 async def bin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1418,6 +1440,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cmds — Show command list",
         "/id — Show your Telegram ID",
         "/status — Show bot status",
+        "/version — Bot version info",
     ]))
 
     if isadm:
@@ -5352,6 +5375,8 @@ async def main():
         app.add_handler(CommandHandler("id", id_cmd))
         app.add_handler(CommandHandler("bin", bin_cmd))
         app.add_handler(CommandHandler("status", status_cmd))
+        app.add_handler(CommandHandler("version", version_cmd))
+        app.add_handler(CommandHandler("ver", version_cmd))
         app.add_handler(CommandHandler("sort", sort_cmd))
         app.add_handler(CommandHandler("clean", clean_cmd))
 
