@@ -178,6 +178,105 @@ def safe_driver_quit(driver):
             driver = None
             periodic_cleanup()
 
+# ==== 2.2 Browser Command Health Tracking ====
+BROWSER_CMDS = ("kill", "kd", "ko", "zz", "dd", "st", "bt", "chk")
+_health_lock = threading.Lock()
+_health_stats = {cmd: {"success": 0, "failure": 0, "last_status": "idle", "last_time": None} for cmd in BROWSER_CMDS}
+_health_repair_threshold = 30  # Auto-repair when health drops below 30%
+_health_window = 50  # Track last 50 operations for health calculation
+
+def record_cmd_success(cmd: str):
+    """Record a successful command execution"""
+    if cmd not in BROWSER_CMDS:
+        return
+    with _health_lock:
+        _health_stats[cmd]["success"] += 1
+        _health_stats[cmd]["last_status"] = "success"
+        _health_stats[cmd]["last_time"] = datetime.now().isoformat()
+        # Check if we need to reset counters (prevent overflow)
+        total = _health_stats[cmd]["success"] + _health_stats[cmd]["failure"]
+        if total > 1000:
+            # Scale down to keep ratios but prevent overflow
+            _health_stats[cmd]["success"] = int(_health_stats[cmd]["success"] * 0.5)
+            _health_stats[cmd]["failure"] = int(_health_stats[cmd]["failure"] * 0.5)
+
+def record_cmd_failure(cmd: str):
+    """Record a failed command execution"""
+    if cmd not in BROWSER_CMDS:
+        return
+    with _health_lock:
+        _health_stats[cmd]["failure"] += 1
+        _health_stats[cmd]["last_status"] = "failure"
+        _health_stats[cmd]["last_time"] = datetime.now().isoformat()
+        # Check health and auto-repair if needed
+        health = get_cmd_health(cmd)
+        if health < _health_repair_threshold and health > 0:
+            _trigger_auto_repair(cmd)
+
+def get_cmd_health(cmd: str) -> int:
+    """Get health percentage for a command (0-100)"""
+    if cmd not in BROWSER_CMDS:
+        return 100
+    stats = _health_stats[cmd]
+    total = stats["success"] + stats["failure"]
+    if total == 0:
+        return 100  # No data = assume healthy
+    return int((stats["success"] / total) * 100)
+
+def get_all_health() -> dict:
+    """Get health stats for all browser commands"""
+    result = {}
+    for cmd in BROWSER_CMDS:
+        stats = _health_stats[cmd]
+        total = stats["success"] + stats["failure"]
+        health = 100 if total == 0 else int((stats["success"] / total) * 100)
+        result[cmd] = {
+            "health": health,
+            "success": stats["success"],
+            "failure": stats["failure"],
+            "total": total,
+            "last_status": stats["last_status"],
+            "last_time": stats["last_time"]
+        }
+    return result
+
+def _trigger_auto_repair(cmd: str):
+    """Auto-repair when health is critical"""
+    global _health_stats
+    # Force garbage collection
+    gc.collect()
+    # Clear some failure counts to allow recovery
+    with _health_lock:
+        # Reduce failure count to give command a chance to recover
+        if _health_stats[cmd]["failure"] > 5:
+            _health_stats[cmd]["failure"] = max(1, int(_health_stats[cmd]["failure"] * 0.3))
+        # Log repair action
+        print(f"⚕️ Auto-repair triggered for /{cmd} - cleared failure history")
+
+def reset_cmd_health(cmd: str = None):
+    """Reset health stats for a command or all commands"""
+    global _health_stats
+    with _health_lock:
+        if cmd and cmd in BROWSER_CMDS:
+            _health_stats[cmd] = {"success": 0, "failure": 0, "last_status": "reset", "last_time": datetime.now().isoformat()}
+        else:
+            for c in BROWSER_CMDS:
+                _health_stats[c] = {"success": 0, "failure": 0, "last_status": "reset", "last_time": datetime.now().isoformat()}
+    # Force cleanup
+    gc.collect()
+
+def get_health_bar(health: int) -> str:
+    """Generate a visual health bar"""
+    filled = health // 10
+    empty = 10 - filled
+    if health >= 70:
+        color = "🟢"
+    elif health >= 40:
+        color = "🟡"
+    else:
+        color = "🔴"
+    return f"{color} {'█' * filled}{'░' * empty} {health}%"
+
 # ==== 3. Persistence & Auth Management (Local JSON file) ====
 USER_DB_FILE = "users.json"
 
@@ -1367,6 +1466,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /cmds - Command list\n"
         "• /id - Your Telegram ID\n"
         "• /status - Bot status\n"
+        "• /health - Browser commands health\n"
         "• /version - Bot version info\n\n"
         "📝 *Card Format:*\n"
         "`CC|MM|YY|CVV` or `CC MM YY CVV`\n\n"
@@ -1470,6 +1570,105 @@ async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=update.message.message_id,
     )
 
+async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show health status of all browser commands with auto-repair info"""
+    uid = update.effective_user.id
+    
+    # Get system stats
+    try:
+        mem = psutil.virtual_memory()
+        cpu = psutil.cpu_percent(interval=0.1)
+        mem_used = mem.percent
+    except:
+        mem_used = 0
+        cpu = 0
+    
+    # Get all command health
+    health_data = get_all_health()
+    uptime = format_timedelta(datetime.now() - start_time)
+    
+    # Build health display
+    lines = ["🏥 *Browser Commands Health*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+    
+    overall_health = 0
+    active_cmds = 0
+    repairs_needed = []
+    
+    for cmd in BROWSER_CMDS:
+        data = health_data[cmd]
+        health = data["health"]
+        bar = get_health_bar(health)
+        
+        # Track overall health
+        if data["total"] > 0:
+            overall_health += health
+            active_cmds += 1
+        
+        # Check if repair needed
+        if health < 30 and data["total"] > 0:
+            repairs_needed.append(cmd)
+        
+        # Status indicator
+        if data["last_status"] == "success":
+            status = "✅"
+        elif data["last_status"] == "failure":
+            status = "❌"
+        else:
+            status = "⚪"
+        
+        # Format line
+        lines.append(f"`/{cmd}` {bar}")
+        lines.append(f"   {status} {data['success']}✓ / {data['failure']}✗ ({data['total']} total)")
+    
+    # Calculate overall health
+    avg_health = overall_health // active_cmds if active_cmds > 0 else 100
+    
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"📊 *Overall Health:* {get_health_bar(avg_health)}")
+    lines.append(f"⏱ *Uptime:* `{uptime}`")
+    lines.append(f"💾 *Memory:* `{mem_used:.1f}%` | 🖥 *CPU:* `{cpu:.1f}%`")
+    
+    # Auto-repair status
+    if repairs_needed:
+        lines.append("")
+        lines.append(f"⚕️ *Auto-Repair Active:* `/{', /'.join(repairs_needed)}`")
+        lines.append("_Failure history reduced to allow recovery_")
+    
+    # Admin reset option
+    if is_admin(uid):
+        lines.append("")
+        lines.append("🔧 *Admin:* `/health reset` to clear all stats")
+        lines.append("🔧 *Admin:* `/health reset <cmd>` to clear specific cmd")
+    
+    # Check for reset command
+    if context.args and is_admin(uid):
+        arg = context.args[0].lower()
+        if arg == "reset":
+            if len(context.args) > 1:
+                cmd_to_reset = context.args[1].lower()
+                if cmd_to_reset in BROWSER_CMDS:
+                    reset_cmd_health(cmd_to_reset)
+                    await update.message.reply_text(
+                        f"✅ Health stats reset for `/{cmd_to_reset}`",
+                        parse_mode="Markdown",
+                        reply_to_message_id=update.message.message_id
+                    )
+                    return
+            else:
+                reset_cmd_health()
+                await update.message.reply_text(
+                    "✅ All health stats have been reset!",
+                    reply_to_message_id=update.message.message_id
+                )
+                return
+    
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_to_message_id=update.message.message_id
+    )
+
 async def bin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_approved(uid, "bin"):
@@ -1571,6 +1770,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cmds — Show command list",
         "/id — Show your Telegram ID",
         "/status — Show bot status",
+        "/health — Browser commands health",
         "/version — Bot version info",
     ]))
 
@@ -3082,11 +3282,13 @@ async def fill_checkout_form(card_input, update_dict):
             ),
             parse_mode="Markdown"
         )
+        record_cmd_success("kill")
 
     except Exception:
         screenshot = "fail.png"
         driver.save_screenshot(screenshot)
         err_trace = traceback.format_exc()
+        record_cmd_failure("kill")
 
         await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="❌ VISA Kill failed.")
         await bot.send_photo(
@@ -3394,11 +3596,13 @@ def run_kd_process(card_input, update_dict):
             f"✅ **Status:** Kd KiLLeD SuccessFully\n"
             f"⏱ **Time:** {duration}s"
         )
+        record_cmd_success("kd")
 
     except Exception as e:
         trace = traceback.format_exc()
         edit_message(f"❌ KD Error: `{e}`")
         admin_report(trace, driver)
+        record_cmd_failure("kd")
     finally:
         try:
             if driver: driver.quit()
@@ -3688,11 +3892,13 @@ def run_ko_process(card_input, update_dict):
             f"✅ **Status:** KO Mode Success\n"
             f"⏱ **Time:** {duration}s"
         )
+        record_cmd_success("ko")
 
     except Exception as e:
         trace = traceback.format_exc()
         edit_message(f"❌ KO Error: `{e}`")
         admin_report(trace, driver)
+        record_cmd_failure("ko")
     finally:
         try:
             if driver: driver.quit()
@@ -3977,11 +4183,13 @@ def run_zz_process(card_input, update_dict):
             f"✅ **Status:** Killed v5 Success\n"
             f"⏱ **Time:** {duration}s"
         )
+        record_cmd_success("zz")
 
     except Exception as e:
         trace = traceback.format_exc()
         edit_message(f"❌ ZZ Error: `{e}`")
         admin_report(trace, driver)
+        record_cmd_failure("zz")
     finally:
         try:
             if driver:
@@ -4270,11 +4478,13 @@ def run_dd_process(card_input, update_dict):
             f"⚡ **Status:** Killed v6 Ultra-Fast\n"
             f"⏱ **Time:** {duration}s"
         )
+        record_cmd_success("dd")
 
     except Exception as e:
         trace = traceback.format_exc()
         edit_message(f"❌ DD Error: `{e}`")
         admin_report(trace, driver)
+        record_cmd_failure("dd")
     finally:
         try:
             if driver:
@@ -5851,6 +6061,7 @@ async def main():
         app.add_handler(CommandHandler("id", id_cmd))
         app.add_handler(CommandHandler("bin", bin_cmd))
         app.add_handler(CommandHandler("status", status_cmd))
+        app.add_handler(CommandHandler("health", health_cmd))
         app.add_handler(CommandHandler("version", version_cmd))
         app.add_handler(CommandHandler("ver", version_cmd))
         app.add_handler(CommandHandler("sort", sort_cmd))
