@@ -19,6 +19,9 @@ from multiprocessing import Process
 from io import BytesIO, StringIO
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+import threading
 
 import nest_asyncio
 import names
@@ -33,11 +36,100 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from fake_useragent import UserAgent
 
+# ==== 1.1 Performance & Connection Pooling ====
+# Global session with connection pooling for faster HTTP requests
+_http_session = None
+_http_session_lock = threading.Lock()
+
+def get_http_session():
+    """Get or create a pooled HTTP session for faster requests"""
+    global _http_session
+    if _http_session is None:
+        with _http_session_lock:
+            if _http_session is None:
+                _http_session = requests.Session()
+                adapter = requests.adapters.HTTPAdapter(
+                    pool_connections=20,
+                    pool_maxsize=50,
+                    max_retries=requests.adapters.Retry(
+                        total=2,
+                        backoff_factor=0.1,
+                        status_forcelist=[500, 502, 503, 504]
+                    )
+                )
+                _http_session.mount('http://', adapter)
+                _http_session.mount('https://', adapter)
+    return _http_session
+
+# Thread pool for parallel operations
+_executor = ThreadPoolExecutor(max_workers=10)
+
 # ==== 2. Global Configs ====
 CHROME_PATH = "/usr/bin/google-chrome"
 CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
 BOT_TOKEN = os.environ.get("BOT_TOKEN") or ""
 APP_VERSION = os.environ.get("APP_VERSION") or os.environ.get("BOT_VERSION") or "dev"
+
+# Railway Pro optimizations
+MAX_CONCURRENT_BROWSERS = int(os.environ.get("MAX_BROWSERS", "5"))
+BROWSER_TIMEOUT = int(os.environ.get("BROWSER_TIMEOUT", "30"))
+
+def get_optimized_chrome_options(fast_mode=False):
+    """Get optimized Chrome options for Railway/container environments"""
+    ua = UserAgent()
+    options = webdriver.ChromeOptions()
+    options.binary_location = CHROME_PATH
+    options.add_argument(f"user-agent={ua.random}")
+    
+    # Essential headless options
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    
+    # Memory optimization for Railway containers
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-software-rasterizer")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-plugins")
+    options.add_argument("--disable-images")  # Faster loading
+    options.add_argument("--disable-javascript-harmony-shipping")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-breakpad")
+    options.add_argument("--disable-component-extensions-with-background-pages")
+    options.add_argument("--disable-component-update")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--disable-hang-monitor")
+    options.add_argument("--disable-ipc-flooding-protection")
+    options.add_argument("--disable-popup-blocking")
+    options.add_argument("--disable-prompt-on-repost")
+    options.add_argument("--disable-renderer-backgrounding")
+    options.add_argument("--disable-sync")
+    options.add_argument("--disable-translate")
+    options.add_argument("--metrics-recording-only")
+    options.add_argument("--no-first-run")
+    options.add_argument("--safebrowsing-disable-auto-update")
+    options.add_argument("--password-store=basic")
+    options.add_argument("--use-mock-keychain")
+    
+    # Window size
+    options.add_argument("--window-size=1920,1080")
+    
+    # Anti-detection
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    
+    # Fast mode optimizations
+    if fast_mode:
+        options.set_capability("pageLoadStrategy", "eager")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+    
+    return options
+
+# Browser semaphore to limit concurrent browser instances
+_browser_semaphore = threading.Semaphore(MAX_CONCURRENT_BROWSERS)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -55,6 +147,36 @@ BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
 
 nest_asyncio.apply()
 start_time = datetime.now()
+
+# ==== 2.1 Memory Management for Railway ====
+_last_gc_time = time.time()
+_gc_interval = 300  # Run GC every 5 minutes
+
+def periodic_cleanup():
+    """Periodic memory cleanup for long-running Railway deployments"""
+    global _last_gc_time
+    current_time = time.time()
+    if current_time - _last_gc_time > _gc_interval:
+        gc.collect()
+        _last_gc_time = current_time
+        return True
+    return False
+
+def force_cleanup():
+    """Force garbage collection after heavy operations"""
+    gc.collect()
+    
+def safe_driver_quit(driver):
+    """Safely quit driver with cleanup"""
+    if driver:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        finally:
+            # Help garbage collector
+            driver = None
+            periodic_cleanup()
 
 # ==== 3. Persistence & Auth Management (Local JSON file) ====
 USER_DB_FILE = "users.json"
@@ -282,8 +404,20 @@ def save_bin_to_local_cache(bin_data: dict) -> None:
     except Exception as e:
         print(f"❌ Error saving BIN cache: {e}")
 
+@lru_cache(maxsize=5000)
+def _cached_bin_api_lookup(bin_str):
+    """Cached API lookup for BINs not in local database"""
+    try:
+        session = get_http_session()
+        res = session.get(f"https://bins.antipublic.cc/bins/{bin_str}", timeout=3)
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+    return None
+
 def get_bin_info(bin_number):
-    """Get BIN info from cache or API with country flag"""
+    """Get BIN info from cache or API with country flag (optimized)"""
     try:
         # Ensure bin_number is 6 digits
         bin_str = str(bin_number)[:6].zfill(6)
@@ -337,10 +471,9 @@ def get_bin_info(bin_number):
                 "source": "database"
             }
         
-        # If not in database, use API
-        res = requests.get(f"https://bins.antipublic.cc/bins/{bin_str}", timeout=5)
-        if res.status_code == 200:
-            data = res.json()
+        # If not in database, use API (with caching)
+        data = _cached_bin_api_lookup(bin_str)
+        if data:
             brand = data.get("brand", "Unknown").upper()
             type_ = data.get("type", "Unknown").upper()
             country = data.get("country_name", "Unknown")
@@ -2854,21 +2987,31 @@ async def fill_checkout_form(card_input, update_dict):
     last_name = names.get_last_name()
     email = f"{first_name.lower()}{random.randint(1000,9999)}@example.com"
 
+    # Optimized Chrome options for Railway
     ua = UserAgent()
     options = webdriver.ChromeOptions()
     options.binary_location = CHROME_PATH
     options.add_argument(f"user-agent={ua.random}")
-    options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-software-rasterizer")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--disable-sync")
+    options.add_argument("--no-first-run")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
+    options.set_capability("pageLoadStrategy", "eager")
 
     service = Service(executable_path=CHROME_DRIVER_PATH)
     driver = webdriver.Chrome(service=service, options=options)
-    wait = WebDriverWait(driver, 20)
+    driver.set_page_load_timeout(25)
+    wait = WebDriverWait(driver, 15)
 
     try:
         driver.get("https://secure.checkout.visa.com/createAccount")
@@ -2955,7 +3098,12 @@ async def fill_checkout_form(card_input, update_dict):
         os.remove(screenshot)
 
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except:
+            pass
+        driver = None
+        gc.collect()
 
 async def kill_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -3129,20 +3277,30 @@ def run_kd_process(card_input, update_dict):
     driver = None
 
     try:
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
+        # Optimized Chrome options for Railway
         options = webdriver.ChromeOptions()
         options.binary_location = CHROME_PATH
+        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
         options.add_argument(f"user-agent={ua}")
-        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-sync")
+        options.add_argument("--no-first-run")
         options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
+        options.set_capability("pageLoadStrategy", "eager")
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 4)  # fast, aggressive waits
+        driver.set_page_load_timeout(20)
+        wait = WebDriverWait(driver, 4)
 
         # Step 1: Login
         driver.get("https://src.visa.com/login")
@@ -3245,6 +3403,8 @@ def run_kd_process(card_input, update_dict):
         try:
             if driver: driver.quit()
         except: pass
+        driver = None
+        gc.collect()
 
 async def kd_cmd(update, context):
     uid = update.effective_user.id
@@ -3411,20 +3571,30 @@ def run_ko_process(card_input, update_dict):
     driver = None
 
     try:
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
+        # Optimized Chrome options for Railway
         options = webdriver.ChromeOptions()
         options.binary_location = CHROME_PATH
+        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
         options.add_argument(f"user-agent={ua}")
-        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-sync")
+        options.add_argument("--no-first-run")
         options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
+        options.set_capability("pageLoadStrategy", "eager")
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 4)  # fast waits
+        driver.set_page_load_timeout(20)
+        wait = WebDriverWait(driver, 4)
 
         # Step 1: Login
         driver.get("https://src.visa.com/login")
@@ -3527,6 +3697,8 @@ def run_ko_process(card_input, update_dict):
         try:
             if driver: driver.quit()
         except: pass
+        driver = None
+        gc.collect()
 
 async def ko_cmd(update, context):
     uid = update.effective_user.id
@@ -3695,26 +3867,31 @@ def run_zz_process(card_input, update_dict):
     try:
         edit_message("⚙️ Processing your request...")
 
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
+        # Optimized Chrome options for Railway
         options = webdriver.ChromeOptions()
         options.binary_location = CHROME_PATH
+        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
         options.add_argument(f"user-agent={ua}")
-        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-sync")
+        options.add_argument("--no-first-run")
         options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-        # Faster page loads (good enough for this flow)
-        try:
-            options.set_capability("pageLoadStrategy", "eager")
-        except Exception:
-            pass
+        options.set_capability("pageLoadStrategy", "eager")
 
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 3)  # faster than /ko
+        driver.set_page_load_timeout(20)
+        wait = WebDriverWait(driver, 3)
 
         driver.get("https://src.visa.com/login")
 
@@ -3811,6 +3988,8 @@ def run_zz_process(card_input, update_dict):
                 driver.quit()
         except Exception:
             pass
+        driver = None
+        gc.collect()
 
 
 async def zz_cmd(update, context):
@@ -3980,28 +4159,32 @@ def run_dd_process(card_input, update_dict):
     try:
         edit_message("⚡ Processing (ultra-fast)...")
 
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
+        # Optimized Chrome options for Railway
         options = webdriver.ChromeOptions()
         options.binary_location = CHROME_PATH
+        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
         options.add_argument(f"user-agent={ua}")
-        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-extensions")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-sync")
+        options.add_argument("--disable-translate")
+        options.add_argument("--no-first-run")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-        # Ultra-fast page loads
-        try:
-            options.set_capability("pageLoadStrategy", "eager")
-        except Exception:
-            pass
+        options.set_capability("pageLoadStrategy", "eager")
 
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 2)  # faster than /zz (2s vs 3s)
+        driver.set_page_load_timeout(20)
+        wait = WebDriverWait(driver, 2)
 
         driver.get("https://src.visa.com/login")
 
@@ -4098,6 +4281,9 @@ def run_dd_process(card_input, update_dict):
                 driver.quit()
         except Exception:
             pass
+        # Help garbage collector
+        driver = None
+        gc.collect()
 
 
 async def dd_cmd(update, context):
@@ -5643,13 +5829,18 @@ async def main():
 
     # If polling crashes (network hiccups, Telegram issues, etc.), restart without recursion.
     while True:
-        # FIXED: Add connection timeout settings
+        # Railway Pro optimizations: Better concurrency and timeout settings
         app = (
             ApplicationBuilder()
             .token(token)
+            .concurrent_updates(True)  # Handle multiple users simultaneously
             .connect_timeout(30.0)
             .read_timeout(30.0)
+            .write_timeout(30.0)
             .pool_timeout(30.0)
+            .get_updates_connect_timeout(30.0)
+            .get_updates_read_timeout(30.0)
+            .get_updates_pool_timeout(30.0)
             .build()
         )
 
