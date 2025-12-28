@@ -5982,7 +5982,7 @@ def _parse_cards_fast(text: str) -> list:
     return cards
 
 def _organize_cards(cards: list) -> dict:
-    """Organize cards by BIN, month, year, brand, type, level, country, year+month"""
+    """Organize cards by BIN, month, year - FAST version (no API calls)"""
     result = {
         'by_bin': {},
         'by_month': {},
@@ -5991,26 +5991,28 @@ def _organize_cards(cards: list) -> dict:
         'by_type': {},
         'by_level': {},
         'by_country': {},
-        'by_year_month': {},  # Format: "27_05" for 2027 May
-        'all': cards
+        'by_year_month': {},
+        'all': cards,
+        '_bin_info_loaded': False  # Flag for lazy loading
     }
     
-    # First pass: organize by basic fields
+    # Single pass: organize by basic fields only (FAST)
     for card in cards:
-        # By BIN
         bin_num = card['bin']
+        mm = card['mm']
+        yy = card['yy']
+        
+        # By BIN
         if bin_num not in result['by_bin']:
             result['by_bin'][bin_num] = []
         result['by_bin'][bin_num].append(card)
         
         # By month
-        mm = card['mm']
         if mm not in result['by_month']:
             result['by_month'][mm] = []
         result['by_month'][mm].append(card)
         
         # By year
-        yy = card['yy']
         if yy not in result['by_year']:
             result['by_year'][yy] = []
         result['by_year'][yy].append(card)
@@ -6021,49 +6023,56 @@ def _organize_cards(cards: list) -> dict:
             result['by_year_month'][ym_key] = []
         result['by_year_month'][ym_key].append(card)
     
-    # Second pass: Get BIN info and organize by brand/type/level/country
-    bin_info_cache = {}
-    for bin_num in list(result['by_bin'].keys()):
+    return result
+
+def _load_bin_details_lazy(organized: dict) -> None:
+    """Load BIN details lazily when needed (for brand/type/level/country)"""
+    if organized.get('_bin_info_loaded'):
+        return
+    
+    # Sort BINs by card count and limit to top 100 for speed
+    sorted_bins = sorted(organized['by_bin'].items(), key=lambda x: -len(x[1]))[:100]
+    
+    for bin_num, cards_list in sorted_bins:
         try:
+            # Use cached lookup (fast)
             info_str, details = get_bin_info(bin_num)
             if not details:
                 continue
-            bin_info_cache[bin_num] = details
             
             # By Brand
-            brand = (details.get('brand') or 'UNKNOWN').upper()
+            brand = (details.get('brand') or '').upper()
             if brand and brand != 'UNKNOWN':
-                if brand not in result['by_brand']:
-                    result['by_brand'][brand] = []
-                result['by_brand'][brand].extend(result['by_bin'][bin_num])
+                if brand not in organized['by_brand']:
+                    organized['by_brand'][brand] = []
+                organized['by_brand'][brand].extend(cards_list)
             
-            # By Type (CREDIT, DEBIT, PREPAID)
-            card_type = (details.get('type') or 'UNKNOWN').upper()
+            # By Type
+            card_type = (details.get('type') or '').upper()
             if card_type and card_type != 'UNKNOWN':
-                if card_type not in result['by_type']:
-                    result['by_type'][card_type] = []
-                result['by_type'][card_type].extend(result['by_bin'][bin_num])
+                if card_type not in organized['by_type']:
+                    organized['by_type'][card_type] = []
+                organized['by_type'][card_type].extend(cards_list)
             
-            # By Level (GOLD, PLATINUM, CLASSIC, etc.)
+            # By Level
             level = (details.get('level') or '').upper()
             if level:
-                if level not in result['by_level']:
-                    result['by_level'][level] = []
-                result['by_level'][level].extend(result['by_bin'][bin_num])
+                if level not in organized['by_level']:
+                    organized['by_level'][level] = []
+                organized['by_level'][level].extend(cards_list)
             
             # By Country
             country = details.get('country') or details.get('country_name') or ''
-            country_code = details.get('country_code') or ''
             country_flag = details.get('country_flag') or ''
             if country:
                 country_key = f"{country_flag} {country}" if country_flag else country
-                if country_key not in result['by_country']:
-                    result['by_country'][country_key] = []
-                result['by_country'][country_key].extend(result['by_bin'][bin_num])
+                if country_key not in organized['by_country']:
+                    organized['by_country'][country_key] = []
+                organized['by_country'][country_key].extend(cards_list)
         except:
-            pass
+            continue
     
-    return result
+    organized['_bin_info_loaded'] = True
 
 async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Fast card filter command - extracts, validates, and organizes cards"""
@@ -6155,57 +6164,41 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         duration = round(time.time() - start, 2)
         
-        # Build stats
+        # Build stats (fast - no BIN lookups yet)
         bins_count = len(organized['by_bin'])
-        brands_count = len(organized['by_brand'])
-        types_count = len(organized['by_type'])
-        levels_count = len(organized['by_level'])
-        countries_count = len(organized['by_country'])
         years = sorted(organized['by_year'].keys())
+        months_count = len(organized['by_month'])
         
-        # Create buttons - Row 1: Download
+        # Create buttons - simple layout
         buttons = [
-            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")]
+            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")],
+            [
+                InlineKeyboardButton(f"🏦 BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
+                InlineKeyboardButton("💳 Brand", callback_data=f"f_brand:{session_id}")
+            ],
+            [
+                InlineKeyboardButton("🔖 Type", callback_data=f"f_type:{session_id}"),
+                InlineKeyboardButton("⭐ Level", callback_data=f"f_level:{session_id}")
+            ],
+            [
+                InlineKeyboardButton("🌍 Country", callback_data=f"f_country:{session_id}"),
+                InlineKeyboardButton("📅 Year+Month", callback_data=f"f_ym:{session_id}")
+            ],
+            [
+                InlineKeyboardButton(f"📅 Month ({months_count})", callback_data=f"f_month:{session_id}"),
+                InlineKeyboardButton(f"📆 Year ({len(years)})", callback_data=f"f_year:{session_id}")
+            ],
+            [
+                InlineKeyboardButton("🔍 Search", callback_data=f"f_search:{session_id}"),
+                InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")
+            ]
         ]
-        
-        # Row 2: BIN & Brand
-        buttons.append([
-            InlineKeyboardButton(f"🏦 BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
-            InlineKeyboardButton(f"💳 Brand ({brands_count})", callback_data=f"f_brand:{session_id}")
-        ])
-        
-        # Row 3: Type & Level
-        buttons.append([
-            InlineKeyboardButton(f"🔖 Type ({types_count})", callback_data=f"f_type:{session_id}"),
-            InlineKeyboardButton(f"⭐ Level ({levels_count})", callback_data=f"f_level:{session_id}")
-        ])
-        
-        # Row 4: Country & Year+Month
-        buttons.append([
-            InlineKeyboardButton(f"🌍 Country ({countries_count})", callback_data=f"f_country:{session_id}"),
-            InlineKeyboardButton("📅 Year+Month", callback_data=f"f_ym:{session_id}")
-        ])
-        
-        # Row 5: Month & Year
-        buttons.append([
-            InlineKeyboardButton("📅 Month", callback_data=f"f_month:{session_id}"),
-            InlineKeyboardButton("📆 Year", callback_data=f"f_year:{session_id}")
-        ])
-        
-        # Row 6: Search & Clear
-        buttons.append([
-            InlineKeyboardButton("🔍 Search BIN", callback_data=f"f_search:{session_id}"),
-            InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")
-        ])
         
         await msg.edit_text(
             f"✅ *Filter Complete*\n\n"
-            f"📊 *Results:*\n"
-            f"• Cards: `{len(cards):,}`\n"
-            f"• BINs: `{bins_count}` | Brands: `{brands_count}`\n"
-            f"• Types: `{types_count}` | Levels: `{levels_count}`\n"
-            f"• Countries: `{countries_count}`\n"
-            f"• Years: `{', '.join(years)}`\n\n"
+            f"📊 Cards: `{len(cards):,}`\n"
+            f"🏦 BINs: `{bins_count}`\n"
+            f"📆 Years: `{', '.join(years)}`\n\n"
             f"⏱ `{duration}s` 👤 {_escape_md(uname)}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
@@ -6386,8 +6379,11 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # By Brand
+    # By Brand (lazy load BIN details)
     elif action == "f_brand":
+        # Load BIN details if not already loaded
+        _load_bin_details_lazy(organized)
+        
         brands = sorted(organized['by_brand'].items(), key=lambda x: -len(x[1]))
         
         if not brands:
@@ -6427,8 +6423,10 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # By Type
+    # By Type (lazy load BIN details)
     elif action == "f_type":
+        _load_bin_details_lazy(organized)
+        
         types = sorted(organized['by_type'].items(), key=lambda x: -len(x[1]))
         
         if not types:
@@ -6469,8 +6467,10 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # By Level
+    # By Level (lazy load BIN details)
     elif action == "f_level":
+        _load_bin_details_lazy(organized)
+        
         levels = sorted(organized['by_level'].items(), key=lambda x: -len(x[1]))
         
         if not levels:
@@ -6510,8 +6510,10 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # By Country
+    # By Country (lazy load BIN details)
     elif action == "f_country":
+        _load_bin_details_lazy(organized)
+        
         countries = sorted(organized['by_country'].items(), key=lambda x: -len(x[1]))
         
         if not countries:
@@ -6667,43 +6669,38 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "f_back":
         cards = organized['all']
         bins_count = len(organized['by_bin'])
-        brands_count = len(organized['by_brand'])
-        types_count = len(organized['by_type'])
-        levels_count = len(organized['by_level'])
-        countries_count = len(organized['by_country'])
         years = sorted(organized['by_year'].keys())
+        months_count = len(organized['by_month'])
         
         buttons = [
-            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")]
+            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")],
+            [
+                InlineKeyboardButton(f"🏦 BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
+                InlineKeyboardButton("💳 Brand", callback_data=f"f_brand:{session_id}")
+            ],
+            [
+                InlineKeyboardButton("🔖 Type", callback_data=f"f_type:{session_id}"),
+                InlineKeyboardButton("⭐ Level", callback_data=f"f_level:{session_id}")
+            ],
+            [
+                InlineKeyboardButton("🌍 Country", callback_data=f"f_country:{session_id}"),
+                InlineKeyboardButton("📅 Year+Month", callback_data=f"f_ym:{session_id}")
+            ],
+            [
+                InlineKeyboardButton(f"📅 Month ({months_count})", callback_data=f"f_month:{session_id}"),
+                InlineKeyboardButton(f"📆 Year ({len(years)})", callback_data=f"f_year:{session_id}")
+            ],
+            [
+                InlineKeyboardButton("🔍 Search", callback_data=f"f_search:{session_id}"),
+                InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")
+            ]
         ]
-        buttons.append([
-            InlineKeyboardButton(f"🏦 BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
-            InlineKeyboardButton(f"💳 Brand ({brands_count})", callback_data=f"f_brand:{session_id}")
-        ])
-        buttons.append([
-            InlineKeyboardButton(f"🔖 Type ({types_count})", callback_data=f"f_type:{session_id}"),
-            InlineKeyboardButton(f"⭐ Level ({levels_count})", callback_data=f"f_level:{session_id}")
-        ])
-        buttons.append([
-            InlineKeyboardButton(f"🌍 Country ({countries_count})", callback_data=f"f_country:{session_id}"),
-            InlineKeyboardButton("📅 Year+Month", callback_data=f"f_ym:{session_id}")
-        ])
-        buttons.append([
-            InlineKeyboardButton("📅 Month", callback_data=f"f_month:{session_id}"),
-            InlineKeyboardButton("📆 Year", callback_data=f"f_year:{session_id}")
-        ])
-        buttons.append([
-            InlineKeyboardButton("🔍 Search BIN", callback_data=f"f_search:{session_id}"),
-            InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")
-        ])
         
         await query.edit_message_text(
             f"✅ *Filter Results*\n\n"
-            f"• Cards: `{len(cards):,}`\n"
-            f"• BINs: `{bins_count}` | Brands: `{brands_count}`\n"
-            f"• Types: `{types_count}` | Levels: `{levels_count}`\n"
-            f"• Countries: `{countries_count}`\n"
-            f"• Years: `{', '.join(years)}`\n\n"
+            f"📊 Cards: `{len(cards):,}`\n"
+            f"🏦 BINs: `{bins_count}`\n"
+            f"📆 Years: `{', '.join(years)}`\n\n"
             f"👤 {_escape_md(session['user'])}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
