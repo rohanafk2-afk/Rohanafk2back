@@ -60,7 +60,7 @@ start_time = datetime.now()
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "st", "bt", "sort", "chk", "clean", "num", "adhar")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "num", "adhar")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -1219,7 +1219,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /kill <card> - VISA Killer\n"
         "• /kd <card> - VISA Killer #2\n"
         "• /ko <card> - VISA Killer #3\n"
-        "• /zz <card> - Killed v5 (fast)\n\n"
+        "• /zz <card> - Killed v5 (fast)\n"
+        "• /dd <card> - Killed v6 (ultra-fast)\n\n"
         "🔧 *Data Processing:*\n"
         "• /clean <data|file> - Advanced card cleaner\n"
         "• /sort <data|file> - Clean & sort cards\n"
@@ -1418,6 +1419,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lock("/kd <card> — VISA Killer #2", "kd"),
         lock("/ko <card> — VISA Killer #3", "ko"),
         lock("/zz <card> — Killed v5 (fast)", "zz"),
+        lock("/dd <card> — Killed v6 (ultra-fast)", "dd"),
     ]))
 
     # Data Processing Tools
@@ -5692,6 +5694,7 @@ async def main():
         app.add_handler(CommandHandler("kd", kd_cmd))
         app.add_handler(CommandHandler("ko", ko_cmd))
         app.add_handler(CommandHandler("zz", zz_cmd))
+        app.add_handler(CommandHandler("dd", dd_cmd))
         app.add_handler(CommandHandler("st", st_cmd))
         app.add_handler(CommandHandler("bt", bt_cmd))
         app.add_handler(CommandHandler("chk", chk_cmd))
