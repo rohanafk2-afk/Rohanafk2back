@@ -2220,10 +2220,11 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await show_expiry_month_details(query, organized_data, identifier, session_id)
         elif sub_type == "ym":
             # Year-month subcategory - FIXED: Proper handling
-            # Format: c_sub:ym:year:month:session_id
-            if len(parts) >= 5:
-                year = identifier
-                month = parts[4]  # month is in position 4
+            # Format: c_sub:ym:ym:year:month:session_id
+            if len(parts) >= 6:
+                year = identifier  # parts[3] = year
+                month = parts[4]   # parts[4] = month
+                session_id = parts[5]  # parts[5] = session_id
                 await show_year_month_details(query, organized_data, year, month, session_id)
             else:
                 await query.answer("❌ Invalid year-month format", show_alert=True)
@@ -3020,8 +3021,8 @@ async def show_expiry_year_details(query, organized_data, year, session_id):
     for month, cards in month_items:
         month_name = month_names.get(month, month)
         btn_text = f"{month_name} ({len(cards)})"
-        # FIXED: Correct format for year-month selection
-        callback_data = f"c_sub:ym:{year}:{month}:{session_id}"
+        # FIXED: Correct format for year-month selection - c_sub:category:sub_type:identifier:extra:session_id
+        callback_data = f"c_sub:ym:ym:{year}:{month}:{session_id}"
         row.append(InlineKeyboardButton(btn_text, callback_data=callback_data))
         
         if len(row) == 2:
