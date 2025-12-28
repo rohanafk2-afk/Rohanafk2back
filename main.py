@@ -2125,7 +2125,18 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         category = parts[1]  # Main category (e, ey, ym, etc.)
         sub_type = parts[2]  # Sub type (t, v, ym)
         identifier = parts[3]  # Identifier (year, month, year_month)
-        session_id = parts[4]  # session ID
+        
+        # FIXED: Extract session_id correctly based on sub_type
+        # For year-month: c_sub:ym:ym:year:month:session_id (6 parts)
+        # For others: c_sub:cat:sub:id:session_id (5 parts)
+        if sub_type == "ym" and len(parts) >= 6:
+            year = identifier
+            month = parts[4]
+            session_id = parts[5]
+        else:
+            session_id = parts[4]
+            year = None
+            month = None
         
         if not session_id or session_id not in context.user_data:
             await query.edit_message_text("❌ Session expired. Please run /clean again.")
@@ -2162,12 +2173,8 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif category == "em":
                 await show_expiry_month_details(query, organized_data, identifier, session_id)
         elif sub_type == "ym":
-            # Year-month subcategory - FIXED: Proper handling
-            # Format: c_sub:ym:ym:year:month:session_id
-            if len(parts) >= 6:
-                year = identifier  # parts[3] = year
-                month = parts[4]   # parts[4] = month
-                session_id = parts[5]  # parts[5] = session_id
+            # Year-month subcategory - already extracted above
+            if year and month:
                 await show_year_month_details(query, organized_data, year, month, session_id)
             else:
                 await query.answer("❌ Invalid year-month format", show_alert=True)
