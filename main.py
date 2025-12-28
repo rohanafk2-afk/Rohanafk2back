@@ -4324,53 +4324,45 @@ def run_ze_process(card_input, update_dict):
         bin_thread.start()
 
         driver.get("https://src.visa.com/login")
-        time.sleep(0.6)
-
-        # Dismiss cookie banner
+        
+        # Wait for page and dismiss cookie - MUST work
         try:
-            accept_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Accept')]")
-            driver.execute_script("arguments[0].click();", accept_btn)
+            accept_btn = WebDriverWait(driver, 3).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[text()='Accept']"))
+            )
+            accept_btn.click()
         except:
-            try:
-                driver.execute_script("""
-                    var btns = document.querySelectorAll('button');
-                    for (var i = 0; i < btns.length; i++) {
-                        if (btns[i].innerText.includes('Accept')) { btns[i].click(); break; }
+            # Force remove cookie elements
+            driver.execute_script("""
+                var btns = document.querySelectorAll('button');
+                for (var i = 0; i < btns.length; i++) {
+                    if (btns[i].innerText.trim() === 'Accept' || btns[i].innerText.trim() === 'Reject all') {
+                        btns[i].click(); break;
                     }
-                """)
-            except:
-                pass
-        time.sleep(0.2)
+                }
+                // Remove any blocking overlays
+                document.querySelectorAll('[class*="cookie"], [id*="cookie"], [class*="banner"]').forEach(e => e.remove());
+            """)
+        
+        time.sleep(0.3)
 
         # Fill email
-        email_field = wait.until(EC.presence_of_element_located((By.ID, "email-input")))
-        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles: true}));", email_field, get_random_email())
+        email_field = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
+        email_field.send_keys(get_random_email())
         
-        # Click Continue
-        try:
-            continue_btn = driver.find_element(By.CSS_SELECTOR, '[data-testid="continue-button"]')
-            driver.execute_script("arguments[0].click();", continue_btn)
-        except:
-            driver.execute_script("""
-                var btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Continue'));
-                if (btn) btn.click();
-            """)
+        # Click Continue - wait for it to be clickable
+        continue_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]')))
+        continue_btn.click()
         
-        time.sleep(0.6)
+        time.sleep(0.7)
         
-        # Terms checkbox
-        checkbox = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="terms-checkbox"], input[type="checkbox"]')))
-        driver.execute_script("arguments[0].click();", checkbox)
+        # Terms checkbox - wait for page transition
+        checkbox = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]')))
+        checkbox.click()
         
         # Next button
-        try:
-            next_btn = driver.find_element(By.CSS_SELECTOR, '[data-testid="next-button"]')
-            driver.execute_script("arguments[0].click();", next_btn)
-        except:
-            driver.execute_script("""
-                var btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Next'));
-                if (btn) btn.click();
-            """)
+        next_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]')))
+        next_btn.click()
         
         time.sleep(0.5)
 
