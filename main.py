@@ -281,7 +281,7 @@ def get_health_bar(health: int) -> str:
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "num", "adhar")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "filter", "num", "adhar")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -1454,6 +1454,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /zz <card> - Killed v5 (fast)\n"
         "• /dd <card> - Killed v6 (ultra-fast)\n\n"
         "🔧 *Data Processing:*\n"
+        "• /filter <data|file> - Fast card filter (new)\n"
         "• /clean <data|file> - Advanced card cleaner\n"
         "• /sort <data|file> - Clean & sort cards\n"
         "• /bin <bins/cards> - BIN lookup\n\n"
@@ -1571,8 +1572,13 @@ async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show health status of all browser commands with auto-repair info"""
+    """Show health status of all browser commands with auto-repair info (Admin only)"""
     uid = update.effective_user.id
+    
+    # Admin only
+    if not is_admin(uid):
+        await update.message.reply_text("⛔ This command is for admins only.", reply_to_message_id=update.message.message_id)
+        return
     
     # Get system stats
     try:
@@ -1752,6 +1758,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Data Processing Tools
     parts.append("🔧 *Data Processing Tools*\n" + "\n".join([
+        lock("/filter <data|file> — Fast card filter (new)", "filter"),
         lock("/clean <data|file> — Advanced cleaner & organizer", "clean"),
         lock("/sort <data|file> — Clean & sort messy cards", "sort"),
         lock("/bin <bins/cards/mixed> — BIN lookup", "bin"),
@@ -5896,13 +5903,516 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ Unbanned user `{uid}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
+# ==== 13.5 /filter Command - Fast Card Filter & Organizer ====
+_filter_sessions = {}  # Store filter sessions
+
+def _parse_cards_fast(text: str) -> list:
+    """Fast card parsing with regex - returns list of card dicts"""
+    if not text:
+        return []
+    
+    cards = []
+    seen = set()
+    
+    # Normalize separators
+    text = text.replace('\r', '\n')
+    
+    # Pattern for card: 13-19 digits, then separator, MM, separator, YY/YYYY, separator, CVV
+    pattern = r'(\d{13,19})[|\s/\\:;,._-]+(\d{1,2})[|\s/\\:;,._-]+(\d{2,4})[|\s/\\:;,._-]+(\d{3,4})'
+    
+    for match in re.finditer(pattern, text):
+        cc, mm, yy, cvv = match.groups()
+        
+        # Normalize
+        mm = mm.zfill(2)
+        yy = yy[-2:] if len(yy) == 4 else yy.zfill(2)
+        
+        # Validate
+        if not (1 <= int(mm) <= 12):
+            continue
+        if len(cvv) < 3:
+            continue
+        
+        # Create unique key
+        key = f"{cc}|{mm}|{yy}|{cvv}"
+        if key in seen:
+            continue
+        seen.add(key)
+        
+        # Check if expired
+        try:
+            year = 2000 + int(yy)
+            month = int(mm)
+            now = datetime.now()
+            if year < now.year or (year == now.year and month < now.month):
+                continue  # Skip expired
+        except:
+            continue
+        
+        # Luhn check
+        digits = [int(d) for d in cc]
+        checksum = 0
+        for i, d in enumerate(reversed(digits)):
+            if i % 2 == 1:
+                d *= 2
+                if d > 9:
+                    d -= 9
+            checksum += d
+        if checksum % 10 != 0:
+            continue
+        
+        cards.append({
+            'cc': cc,
+            'mm': mm,
+            'yy': yy,
+            'cvv': cvv,
+            'bin': cc[:6],
+            'formatted': key
+        })
+    
+    return cards
+
+def _organize_cards(cards: list) -> dict:
+    """Organize cards by BIN, month, year, brand"""
+    result = {
+        'by_bin': {},
+        'by_month': {},
+        'by_year': {},
+        'by_brand': {},
+        'all': cards
+    }
+    
+    for card in cards:
+        # By BIN
+        bin_num = card['bin']
+        if bin_num not in result['by_bin']:
+            result['by_bin'][bin_num] = []
+        result['by_bin'][bin_num].append(card)
+        
+        # By month
+        mm = card['mm']
+        if mm not in result['by_month']:
+            result['by_month'][mm] = []
+        result['by_month'][mm].append(card)
+        
+        # By year
+        yy = card['yy']
+        if yy not in result['by_year']:
+            result['by_year'][yy] = []
+        result['by_year'][yy].append(card)
+    
+    # Get brand info for top BINs
+    for bin_num in list(result['by_bin'].keys())[:50]:  # Limit to 50 BINs for speed
+        try:
+            info_str, details = get_bin_info(bin_num)
+            brand = (details or {}).get('brand', 'UNKNOWN')
+            if brand not in result['by_brand']:
+                result['by_brand'][brand] = []
+            result['by_brand'][brand].extend(result['by_bin'][bin_num])
+        except:
+            pass
+    
+    return result
+
+async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fast card filter command - extracts, validates, and organizes cards"""
+    uid = update.effective_user.id
+    uname = update.effective_user.username or update.effective_user.first_name or "User"
+    
+    if not is_approved(uid, "filter"):
+        await update.message.reply_text("⛔ You are not approved to use /filter", reply_to_message_id=update.message.message_id)
+        return
+    
+    if not is_cmd_enabled("filter"):
+        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
+        return
+    
+    # Get input data
+    data_text = ""
+    
+    if update.message.reply_to_message:
+        replied = update.message.reply_to_message
+        
+        # Check for file
+        if replied.document:
+            if replied.document.file_size > 15 * 1024 * 1024:
+                await update.message.reply_text("⚠️ File too large. Max 15MB.", reply_to_message_id=update.message.message_id)
+                return
+            
+            msg = await update.message.reply_text("📥 Downloading...", reply_to_message_id=update.message.message_id)
+            try:
+                file = await context.bot.get_file(replied.document.file_id)
+                file_bytes = await file.download_as_bytearray()
+                data_text = file_bytes.decode('utf-8', errors='ignore')
+                await msg.edit_text("🔍 Processing...")
+            except Exception as e:
+                await msg.edit_text(f"❌ Download failed: {str(e)[:50]}")
+                return
+        else:
+            data_text = replied.text or replied.caption or ""
+    else:
+        data_text = " ".join(context.args) if context.args else ""
+    
+    if not data_text.strip():
+        await update.message.reply_text(
+            "🔍 *Fast Card Filter*\n\n"
+            "*Usage:*\n"
+            "• `/filter <data>` - Filter cards from text\n"
+            "• Reply to message with `/filter`\n"
+            "• Reply to file with `/filter`\n\n"
+            "*Features:*\n"
+            "• ⚡ Ultra-fast processing\n"
+            "• ✅ Luhn validation\n"
+            "• 📅 Expiry check\n"
+            "• 🏦 BIN lookup\n"
+            "• 📊 Organize by BIN/Month/Year\n\n"
+            "*Max file size:* 15MB",
+            parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id
+        )
+        return
+    
+    # Process
+    start = time.time()
+    msg = await update.message.reply_text("⚡ Filtering cards...", reply_to_message_id=update.message.message_id)
+    
+    try:
+        # Parse cards (fast)
+        cards = _parse_cards_fast(data_text)
+        
+        if not cards:
+            await msg.edit_text("❌ No valid cards found.\n\nMake sure format is: `CC|MM|YY|CVV`", parse_mode="Markdown")
+            return
+        
+        # Organize
+        organized = _organize_cards(cards)
+        
+        # Create session
+        session_id = f"f_{uid}_{int(time.time())}"
+        _filter_sessions[session_id] = {
+            'data': organized,
+            'user': uname,
+            'count': len(cards),
+            'created': time.time()
+        }
+        
+        # Clean old sessions (older than 30 min)
+        now = time.time()
+        for sid in list(_filter_sessions.keys()):
+            if now - _filter_sessions[sid].get('created', 0) > 1800:
+                del _filter_sessions[sid]
+        
+        duration = round(time.time() - start, 2)
+        
+        # Build stats
+        bins_count = len(organized['by_bin'])
+        months = sorted(organized['by_month'].keys())
+        years = sorted(organized['by_year'].keys())
+        
+        # Create buttons
+        buttons = [
+            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")],
+            [
+                InlineKeyboardButton(f"🏦 By BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
+                InlineKeyboardButton(f"📅 By Month", callback_data=f"f_month:{session_id}")
+            ],
+            [
+                InlineKeyboardButton(f"📆 By Year", callback_data=f"f_year:{session_id}"),
+                InlineKeyboardButton("🔍 Search BIN", callback_data=f"f_search:{session_id}")
+            ],
+            [InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")]
+        ]
+        
+        await msg.edit_text(
+            f"✅ *Filter Complete*\n\n"
+            f"📊 *Results:*\n"
+            f"• Cards found: `{len(cards):,}`\n"
+            f"• Unique BINs: `{bins_count}`\n"
+            f"• Years: `{', '.join(years)}`\n"
+            f"• Months: `{len(months)}`\n\n"
+            f"⏱ *Time:* `{duration}s`\n"
+            f"👤 *User:* @{uname}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Error: {str(e)[:100]}")
+
+async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle filter command callbacks"""
+    query = update.callback_query
+    try:
+        await query.answer()
+    except:
+        pass
+    
+    data = query.data
+    if not data or not data.startswith("f_"):
+        return
+    
+    parts = data.split(":")
+    action = parts[0]
+    session_id = parts[1] if len(parts) > 1 else None
+    extra = parts[2] if len(parts) > 2 else None
+    
+    if not session_id or session_id not in _filter_sessions:
+        await query.edit_message_text("❌ Session expired. Run /filter again.")
+        return
+    
+    session = _filter_sessions[session_id]
+    organized = session['data']
+    
+    # Back button
+    def back_btn():
+        return InlineKeyboardButton("⬅️ Back", callback_data=f"f_back:{session_id}")
+    
+    # Download all
+    if action == "f_dl":
+        cards = organized['all']
+        content = "\n".join([c['formatted'] for c in cards])
+        filename = f"filtered_{len(cards)}_{int(time.time())}.txt"
+        
+        await query.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=filename,
+            caption=f"📥 {len(cards):,} cards\n👤 @{session['user']}"
+        )
+        return
+    
+    # By BIN list
+    elif action == "f_bin":
+        bins = sorted(organized['by_bin'].items(), key=lambda x: -len(x[1]))[:20]
+        
+        buttons = []
+        for bin_num, cards in bins:
+            info_str, details = get_bin_info(bin_num)
+            flag = (details or {}).get('country_flag', '')
+            brand = (details or {}).get('brand', '')[:4]
+            buttons.append([InlineKeyboardButton(
+                f"{flag} {bin_num} | {brand} | {len(cards)}",
+                callback_data=f"f_getbin:{session_id}:{bin_num}"
+            )])
+        
+        buttons.append([back_btn()])
+        
+        await query.edit_message_text(
+            f"🏦 *Top BINs* (showing 20)\n\nTap to download:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+    
+    # Get specific BIN
+    elif action == "f_getbin":
+        bin_num = extra
+        cards = organized['by_bin'].get(bin_num, [])
+        
+        if not cards:
+            await query.answer("No cards for this BIN")
+            return
+        
+        content = "\n".join([c['formatted'] for c in cards])
+        info_str, details = get_bin_info(bin_num)
+        flag = (details or {}).get('country_flag', '')
+        
+        await query.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=f"bin_{bin_num}_{len(cards)}.txt",
+            caption=f"🏦 BIN: `{bin_num}` {flag}\n📊 Cards: {len(cards)}\n💳 {info_str}",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # By Month
+    elif action == "f_month":
+        months = sorted(organized['by_month'].keys())
+        month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        
+        buttons = []
+        row = []
+        for mm in months:
+            count = len(organized['by_month'][mm])
+            name = month_names[int(mm)] if int(mm) <= 12 else mm
+            row.append(InlineKeyboardButton(f"{name} ({count})", callback_data=f"f_getmonth:{session_id}:{mm}"))
+            if len(row) == 3:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        
+        buttons.append([back_btn()])
+        
+        await query.edit_message_text(
+            "📅 *By Expiry Month*\n\nTap to download:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+    
+    # Get specific month
+    elif action == "f_getmonth":
+        mm = extra
+        cards = organized['by_month'].get(mm, [])
+        
+        if not cards:
+            await query.answer("No cards for this month")
+            return
+        
+        content = "\n".join([c['formatted'] for c in cards])
+        month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        name = month_names[int(mm)] if int(mm) <= 12 else mm
+        
+        await query.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=f"month_{mm}_{len(cards)}.txt",
+            caption=f"📅 Month: {name}\n📊 Cards: {len(cards)}"
+        )
+        return
+    
+    # By Year
+    elif action == "f_year":
+        years = sorted(organized['by_year'].keys())
+        
+        buttons = []
+        row = []
+        for yy in years:
+            count = len(organized['by_year'][yy])
+            row.append(InlineKeyboardButton(f"20{yy} ({count})", callback_data=f"f_getyear:{session_id}:{yy}"))
+            if len(row) == 3:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        
+        buttons.append([back_btn()])
+        
+        await query.edit_message_text(
+            "📆 *By Expiry Year*\n\nTap to download:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+    
+    # Get specific year
+    elif action == "f_getyear":
+        yy = extra
+        cards = organized['by_year'].get(yy, [])
+        
+        if not cards:
+            await query.answer("No cards for this year")
+            return
+        
+        content = "\n".join([c['formatted'] for c in cards])
+        
+        await query.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=f"year_20{yy}_{len(cards)}.txt",
+            caption=f"📆 Year: 20{yy}\n📊 Cards: {len(cards)}"
+        )
+        return
+    
+    # Search BIN
+    elif action == "f_search":
+        context.user_data[f"filter_search_{query.from_user.id}"] = session_id
+        
+        await query.edit_message_text(
+            "🔍 *BIN Search*\n\n"
+            "Send a BIN (6 digits) to search:\n\n"
+            "Example: `411111`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[back_btn()]])
+        )
+        return
+    
+    # Clear session
+    elif action == "f_clear":
+        if session_id in _filter_sessions:
+            del _filter_sessions[session_id]
+        await query.edit_message_text("🗑️ Session cleared.")
+        return
+    
+    # Back to main menu
+    elif action == "f_back":
+        cards = organized['all']
+        bins_count = len(organized['by_bin'])
+        years = sorted(organized['by_year'].keys())
+        months = organized['by_month']
+        
+        buttons = [
+            [InlineKeyboardButton("📥 Download All", callback_data=f"f_dl:{session_id}")],
+            [
+                InlineKeyboardButton(f"🏦 By BIN ({bins_count})", callback_data=f"f_bin:{session_id}"),
+                InlineKeyboardButton(f"📅 By Month", callback_data=f"f_month:{session_id}")
+            ],
+            [
+                InlineKeyboardButton(f"📆 By Year", callback_data=f"f_year:{session_id}"),
+                InlineKeyboardButton("🔍 Search BIN", callback_data=f"f_search:{session_id}")
+            ],
+            [InlineKeyboardButton("🗑️ Clear", callback_data=f"f_clear:{session_id}")]
+        ]
+        
+        await query.edit_message_text(
+            f"✅ *Filter Results*\n\n"
+            f"• Cards: `{len(cards):,}`\n"
+            f"• BINs: `{bins_count}`\n"
+            f"• Years: `{', '.join(years)}`\n\n"
+            f"👤 @{session['user']}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        return
+
 # ==== 14. Text Message Handler for Bin Search ====
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages for bin search in /clean command"""
+    """Handle text messages for bin search in /clean and /filter commands"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
     
-    # Check if user is in bin search mode
+    # Check if user is in /filter bin search mode
+    filter_key = f"filter_search_{user_id}"
+    if filter_key in context.user_data:
+        session_id = context.user_data[filter_key]
+        del context.user_data[filter_key]
+        
+        if session_id not in _filter_sessions:
+            await update.message.reply_text("❌ Session expired. Run /filter again.", reply_to_message_id=update.message.message_id)
+            return
+        
+        # Extract BIN
+        bin_match = re.search(r'(\d{6})', text)
+        if not bin_match:
+            await update.message.reply_text("❌ Invalid BIN. Send 6 digits.", reply_to_message_id=update.message.message_id)
+            return
+        
+        bin_num = bin_match.group(1)
+        session = _filter_sessions[session_id]
+        cards = session['data']['by_bin'].get(bin_num, [])
+        
+        if not cards:
+            info_str, details = get_bin_info(bin_num)
+            flag = (details or {}).get("country_flag", "")
+            await update.message.reply_text(
+                f"🔍 BIN `{bin_num}` not found in your data.\n\n💳 {info_str} {flag}",
+                parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id
+            )
+            return
+        
+        content = "\n".join([c['formatted'] for c in cards])
+        info_str, details = get_bin_info(bin_num)
+        flag = (details or {}).get("country_flag", "")
+        
+        await update.message.reply_document(
+            document=BytesIO(content.encode()),
+            filename=f"bin_{bin_num}_{len(cards)}.txt",
+            caption=f"🏦 BIN: `{bin_num}` {flag}\n📊 Cards: {len(cards)}\n💳 {info_str}",
+            parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id
+        )
+        return
+    
+    # Check if user is in /clean bin search mode
     session_key = f"bin_search_session_{user_id}"
     if session_key in context.user_data:
         session_id = context.user_data[session_key]
@@ -6066,6 +6576,7 @@ async def main():
         app.add_handler(CommandHandler("ver", version_cmd))
         app.add_handler(CommandHandler("sort", sort_cmd))
         app.add_handler(CommandHandler("clean", clean_cmd))
+        app.add_handler(CommandHandler("filter", filter_cmd))
 
         # New commands
         app.add_handler(CommandHandler("num", num_cmd))
@@ -6074,6 +6585,7 @@ async def main():
         # Callback handlers - FIXED PATTERNS with shorter prefixes
         app.add_handler(CallbackQueryHandler(sort_callback, pattern="^s_"))
         app.add_handler(CallbackQueryHandler(clean_callback, pattern="^c_"))
+        app.add_handler(CallbackQueryHandler(filter_callback, pattern="^f_"))
 
         # Admin commands
         app.add_handler(CommandHandler("approve", approve))
