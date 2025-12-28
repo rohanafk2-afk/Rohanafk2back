@@ -4307,23 +4307,27 @@ def run_ze_process(card_input, update_dict):
 
         driver.get("https://src.visa.com/login")
 
-        # Dismiss cookie overlay - multiple methods
-        time.sleep(0.5)
+        # Dismiss cookie banner - click Accept or Reject all
+        time.sleep(0.8)
         try:
-            # Try clicking the OK button
             driver.execute_script("""
-                var btn = document.querySelector('.wscrOk, .cookie-accept, [data-testid="accept-cookies"], #onetrust-accept-btn-handler');
-                if (btn) btn.click();
-                // Also try to remove overlay directly
+                // Find and click Accept or Reject all button
+                var buttons = document.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    var txt = buttons[i].innerText.toLowerCase();
+                    if (txt.includes('accept') || txt.includes('reject all')) {
+                        buttons[i].click();
+                        break;
+                    }
+                }
+                // Backup: remove any overlays
                 var overlay = document.getElementById('CookieReportsOverlay');
                 if (overlay) overlay.remove();
-                var overlays = document.querySelectorAll('[id*="Cookie"], [class*="cookie"], [id*="consent"]');
-                overlays.forEach(function(el) { el.style.display = 'none'; });
             """)
         except Exception:
             pass
         
-        time.sleep(0.3)
+        time.sleep(0.4)
 
         # Fill email and proceed using JS
         email_field = wait.until(EC.presence_of_element_located((By.ID, "email-input")))
