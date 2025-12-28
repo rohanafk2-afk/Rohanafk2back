@@ -4403,8 +4403,19 @@ def run_ze_process(card_input, update_dict):
         except Exception:
             pass
 
-        # Click submit
-        add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
+        # Scroll down and click submit button
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(0.3)
+        
+        try:
+            add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
+        except:
+            try:
+                add_card_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(),'Add card') or contains(text(),'Submit') or contains(text(),'Continue')]")))
+            except:
+                add_card_btn = driver.find_element(By.CSS_SELECTOR, 'button[type="submit"], form button')
+        
+        driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
         driver.execute_script("arguments[0].click();", add_card_btn)
 
         edit_message("🚀 Updating (FASTEST)...")
@@ -4419,13 +4430,21 @@ def run_ze_process(card_input, update_dict):
                     used_cvvs.add(fake_cvv)
                     break
             try:
-                time.sleep(0.2)  # Minimal delay
+                time.sleep(0.3)
+                # Update CVV and click submit
                 driver.execute_script("""
                     var cvv = document.getElementById('cvv-input');
-                    cvv.value = arguments[0];
-                    cvv.dispatchEvent(new Event('input', {bubbles: true}));
-                    document.querySelector('button[data-testid="submit-button"]').click();
+                    if (cvv) {
+                        cvv.value = arguments[0];
+                        cvv.dispatchEvent(new Event('input', {bubbles: true}));
+                    }
                 """, fake_cvv)
+                try:
+                    btn = driver.find_element(By.CSS_SELECTOR, 'button[data-testid="submit-button"]')
+                    driver.execute_script("arguments[0].click();", btn)
+                except:
+                    btn = driver.find_element(By.XPATH, "//button[contains(text(),'Add card') or contains(text(),'Submit')]")
+                    driver.execute_script("arguments[0].click();", btn)
             except Exception:
                 pass
 
