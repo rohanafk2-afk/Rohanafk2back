@@ -4059,8 +4059,8 @@ def run_dd_process(card_input, update_dict):
 
         edit_message("⚡ Updating (ultra-fast)...")
 
-        # Total CVV attempts = 3 (faster than /zz's 6)
-        TOTAL_TRIES = 3
+        # Total CVV attempts = 6 (same as /zz)
+        TOTAL_TRIES = 6
         used_cvvs = {wrong_cvv}
         for _ in range(TOTAL_TRIES - 1):
             while True:
