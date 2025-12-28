@@ -4302,10 +4302,10 @@ def run_ze_process(card_input, update_dict):
 
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(8)
-        wait = WebDriverWait(driver, 1.5)  # Ultra-short timeout
+        driver.set_page_load_timeout(10)
+        wait = WebDriverWait(driver, 2)  # Balanced timeout
 
-        # Pre-parse card data while page loads
+        # Pre-parse card data
         cc, mm, yy, real_cvv = split_card(card_input)
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
         wrong_cvv = get_wrong_cvv(real_cvv)
@@ -4324,48 +4324,55 @@ def run_ze_process(card_input, update_dict):
         bin_thread.start()
 
         driver.get("https://src.visa.com/login")
+        time.sleep(0.6)
 
-        # Dismiss cookie + fill email in one go
+        # Dismiss cookie banner
         try:
-            driver.execute_script("""
-                setTimeout(function() {
+            accept_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Accept')]")
+            driver.execute_script("arguments[0].click();", accept_btn)
+        except:
+            try:
+                driver.execute_script("""
                     var btns = document.querySelectorAll('button');
                     for (var i = 0; i < btns.length; i++) {
-                        if (btns[i].innerText.toLowerCase().includes('accept')) {
-                            btns[i].click(); break;
-                        }
+                        if (btns[i].innerText.includes('Accept')) { btns[i].click(); break; }
                     }
-                }, 300);
-            """)
-        except:
-            pass
+                """)
+            except:
+                pass
+        time.sleep(0.2)
 
-        # Fill email fast
+        # Fill email
         email_field = wait.until(EC.presence_of_element_located((By.ID, "email-input")))
-        driver.execute_script("arguments[0].value = arguments[1];", email_field, get_random_email())
-        driver.execute_script("arguments[0].dispatchEvent(new Event('input', {bubbles: true}));", email_field)
+        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles: true}));", email_field, get_random_email())
         
         # Click Continue
-        driver.execute_script("""
-            var btn = document.querySelector('[data-testid="continue-button"]') || 
-                      Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Continue'));
-            if (btn) btn.click();
-        """)
+        try:
+            continue_btn = driver.find_element(By.CSS_SELECTOR, '[data-testid="continue-button"]')
+            driver.execute_script("arguments[0].click();", continue_btn)
+        except:
+            driver.execute_script("""
+                var btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Continue'));
+                if (btn) btn.click();
+            """)
+        
+        time.sleep(0.6)
+        
+        # Terms checkbox
+        checkbox = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="terms-checkbox"], input[type="checkbox"]')))
+        driver.execute_script("arguments[0].click();", checkbox)
+        
+        # Next button
+        try:
+            next_btn = driver.find_element(By.CSS_SELECTOR, '[data-testid="next-button"]')
+            driver.execute_script("arguments[0].click();", next_btn)
+        except:
+            driver.execute_script("""
+                var btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Next'));
+                if (btn) btn.click();
+            """)
         
         time.sleep(0.5)
-        
-        # Terms checkbox + Next in one go
-        try:
-            checkbox = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="terms-checkbox"], input[type="checkbox"]')))
-            driver.execute_script("arguments[0].click();", checkbox)
-        except:
-            driver.execute_script("document.querySelector('input[type=\"checkbox\"]').click();")
-        
-        driver.execute_script("""
-            var btn = document.querySelector('[data-testid="next-button"]') || 
-                      Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Next'));
-            if (btn) btn.click();
-        """)
 
         # Wait for card form
         wait.until(EC.presence_of_element_located((By.ID, "card-input")))
