@@ -4310,24 +4310,34 @@ def run_ze_process(card_input, update_dict):
 
         driver.get("https://src.visa.com/login")
 
-        # Handle cookie banner if it appears (will be skipped after first run due to persistent profile)
-        try:
-            cookie_btn = WebDriverWait(driver, 1.5).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[text()='Accept']"))
-            )
-            cookie_btn.click()
-            time.sleep(0.3)
-        except:
-            # No cookie banner or already accepted - good!
-            pass
+        # Handle cookie banner - MUST remove overlay
+        time.sleep(1)
+        driver.execute_script("""
+            // Click Accept
+            var btns = document.querySelectorAll('button');
+            for (var i = 0; i < btns.length; i++) {
+                if (btns[i].innerText.trim() === 'Accept') {
+                    btns[i].click();
+                    break;
+                }
+            }
+            // Force remove overlay
+            var overlay = document.getElementById('CookieReportsOverlay');
+            if (overlay) overlay.parentNode.removeChild(overlay);
+        """)
+        time.sleep(0.3)
+        # Double-check overlay removal
+        driver.execute_script("var o = document.getElementById('CookieReportsOverlay'); if(o) o.parentNode.removeChild(o);")
 
-        # Fill email and continue
+        # Fill email and continue (use JS click to bypass any remaining issues)
         wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]'))).click()
+        driver.execute_script("document.querySelector('[data-testid=\"continue-button\"]').click();")
         
-        # Terms checkbox and next
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]'))).click()
+        time.sleep(0.5)
+        # Terms checkbox and next (use JS to be safe)
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]')))
+        driver.execute_script("document.querySelector('[data-testid=\"terms-checkbox\"]').click();")
+        driver.execute_script("document.querySelector('[data-testid=\"next-button\"]').click();")
 
         # Fill card details
         first_name, last_name = get_fake_name()
