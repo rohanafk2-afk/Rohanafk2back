@@ -697,324 +697,283 @@ def random_password():
 def extract_bt_cards(text):
     return [line.strip() for line in text.splitlines() if re.search(r'\d{12,19}.*\d{1,2}.*\d{2,4}.*\d{3,4}', line)]
 
-# ==== 4.2 /clean Command Helper Functions ====
-def is_card_expired(mm, yy):
-    """Check if card is expired (MM/YY format)"""
+# ==== 4.2 /clean Command Helper Functions (OPTIMIZED for 300MB+ files) ====
+
+def _fast_luhn(card: str) -> bool:
+    """Ultra-fast Luhn check - inline for speed"""
+    try:
+        total = 0
+        for i, c in enumerate(reversed(card)):
+            d = int(c)
+            if i % 2 == 1:
+                d *= 2
+                if d > 9:
+                    d -= 9
+            total += d
+        return total % 10 == 0
+    except:
+        return False
+
+def _fast_expiry_check(mm: str, yy: str) -> bool:
+    """Fast expiry check - returns True if NOT expired"""
     try:
         month = int(mm)
-        year = int(yy)
-        
-        # Handle 2-digit year
-        if year < 100:
-            year += 2000
-        
-        current_year = datetime.now().year
-        current_month = datetime.now().month
-        
-        if year < current_year:
+        year = 2000 + int(yy) if len(yy) == 2 else int(yy)
+        now = datetime.now()
+        if year > now.year:
             return True
-        elif year == current_year and month < current_month:
+        if year == now.year and month >= now.month:
             return True
         return False
     except:
-        return True
-
-def luhn_check(card_number):
-    """Validate card number using Luhn algorithm"""
-    try:
-        card_number = str(card_number).replace(" ", "").replace("-", "")
-        if not card_number.isdigit():
-            return False
-            
-        digits = list(map(int, card_number))
-        odd_digits = digits[-1::-2]
-        even_digits = digits[-2::-2]
-        
-        checksum = sum(odd_digits)
-        for d in even_digits:
-            checksum += sum(divmod(d * 2, 10))
-            
-        return checksum % 10 == 0
-    except:
         return False
 
-def extract_and_clean_cards_advanced(data_text):
+def extract_and_clean_cards_fast(data_text: str) -> tuple:
     """
-    Extract and clean cards from messy text data with advanced processing.
-    Returns tuple: (valid_cards_dict, stats_dict)
+    FAST card extraction for large files (300MB+).
+    Returns: (organized_dict, stats_dict)
+    - No BIN lookups during parsing (lazy load later)
+    - Single regex pass
+    - Minimal memory allocation
     """
     start_time = time.time()
     
-    if not data_text or not isinstance(data_text, str):
-        return {}, {
-            'total_raw': 0,
-            'valid': 0,
-            'junk': 0,
-            'duplicates': 0,
-            'expired': 0,
-            'bins_found': 0,
-            'processing_time': 0
-        }
+    if not data_text:
+        return {}, {'total_raw': 0, 'valid': 0, 'junk': 0, 'duplicates': 0, 
+                   'expired': 0, 'bins_found': 0, 'processing_time': 0}
     
-    # Use multiprocessing for large datasets
-    import multiprocessing
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    # Single comprehensive regex pattern
+    pattern = re.compile(r'(\d{13,19})[|\s/\\:;,._-]+(\d{1,2})[|\s/\\:;,._-]+(\d{2,4})[|\s/\\:;,._-]+(\d{3,4})')
     
-    # Split by lines and process each line separately
-    lines = data_text.split('\n')
+    seen = set()
+    cards = []
+    by_bin = {}
+    by_month = {}
+    by_year = {}
+    by_year_month = {}  # {year_int: {month: [cards]}}
     
-    # Process in batches for speed
-    batch_size = 100
-    batches = [lines[i:i + batch_size] for i in range(0, len(lines), batch_size)]
+    stats = {'total_raw': 0, 'valid': 0, 'junk': 0, 'duplicates': 0, 'expired': 0}
     
-    valid_cards = []
-    # Global de-dupe set; only touched in the main thread to avoid races.
-    seen_cards = set()
-    duplicates = 0
-    expired = 0
-    junk = 0
-    total_raw = 0
+    # Process in chunks for memory efficiency
+    chunk_size = 1024 * 1024  # 1MB chunks
+    pos = 0
+    text_len = len(data_text)
     
-    def process_batch(batch_lines):
-        batch_results = []
-        batch_seen = set()
-        batch_duplicates = 0
-        batch_expired = 0
-        batch_junk = 0
-        batch_total_raw = 0
+    while pos < text_len:
+        # Get chunk with overlap to avoid splitting cards
+        end = min(pos + chunk_size, text_len)
+        if end < text_len:
+            # Extend to next newline to avoid splitting
+            newline_pos = data_text.find('\n', end)
+            if newline_pos != -1 and newline_pos < end + 1000:
+                end = newline_pos + 1
         
-        for line in batch_lines:
-            # Skip empty lines
-            if not line.strip():
+        chunk = data_text[pos:end]
+        pos = end
+        
+        for match in pattern.finditer(chunk):
+            stats['total_raw'] += 1
+            cc, mm, yy, cvv = match.groups()
+            
+            # Quick validations
+            mm = mm.zfill(2)
+            if not (1 <= int(mm) <= 12):
+                stats['junk'] += 1
                 continue
-                
-            # Clean the line - replace multiple spaces with single space
-            line = re.sub(r'\s+', ' ', line.strip())
             
-            # Improved regex patterns for card extraction
-            patterns = [
-                r'(\d{12,19})\s*[|/\\]\s*(\d{1,2})\s*[|/\\]\s*(\d{2,4})\s*[|/\\]\s*(\d{3,4})',  # Card|MM|YY|CVV
-                r'(\d{12,19})\s+(\d{1,2})[/-](\d{2,4})\s+(\d{3,4})',  # Card MM/YY CVV
-                r'(\d{12,19})\s+(\d{1,2})\s+(\d{2,4})\s+(\d{3,4})',  # Card MM YY CVV
-                r'(\d{12,19}).*?(\d{1,2})[/-](\d{2,4}).*?(\d{3,4})',  # Card with MM/YY and CVV anywhere
-            ]
+            yy = yy[-2:] if len(yy) == 4 else yy.zfill(2)
             
-            matches = []
-            for pattern in patterns:
-                matches = re.findall(pattern, line, re.IGNORECASE)
-                if matches:
-                    break
-            
-            batch_total_raw += len(matches)
-            
-            for match in matches:
-                card, mm, yy, cvv = match
-                
-                # Clean and validate
-                card = card.strip()
-                mm = mm.strip().zfill(2)
-                yy = yy.strip()
-                cvv = cvv.strip()
-                
-                # Validate lengths
-                if not (12 <= len(card) <= 19):
-                    batch_junk += 1
-                    continue
-                    
-                if not (1 <= len(mm) <= 2 and mm.isdigit() and 1 <= int(mm) <= 12):
-                    batch_junk += 1
-                    continue
-                    
-                if not (2 <= len(yy) <= 4 and yy.isdigit()):
-                    batch_junk += 1
-                    continue
-                    
-                if not (3 <= len(cvv) <= 4 and cvv.isdigit()):
-                    batch_junk += 1
-                    continue
-                
-                # Handle year format
-                if len(yy) == 4:
-                    yy = yy[-2:]
-                
-                # Fix common year errors
-                try:
-                    year_num = int(yy)
-                    if year_num > 40 and year_num < 100:
-                        # Try to find a better year in the line
-                        year_search = re.search(r'20(\d{2})', line)
-                        if year_search:
-                            yy = year_search.group(1)
-                        else:
-                            batch_junk += 1
-                            continue
-                except:
-                    batch_junk += 1
-                    continue
-                
-                # Luhn check
-                if not luhn_check(card):
-                    batch_junk += 1
-                    continue
-                
-                # Check expiration
-                if is_card_expired(mm, yy):
-                    batch_expired += 1
-                    continue
-                
-                # Format card
-                formatted = f"{card}|{mm}|{yy}|{cvv}"
-                
-                # De-dupe within the batch (thread-local)
-                if formatted in batch_seen:
-                    batch_duplicates += 1
-                    continue
-                batch_seen.add(formatted)
-                    
-                # Get BIN info
-                bin_number = card[:6]
-                bin_info_str, bin_details = get_bin_info(bin_number)
-                
-                # Calculate full year for expiry
-                full_year = 2000 + int(yy) if int(yy) < 100 else int(yy)
-                
-                # Store card with all metadata
-                card_data = {
-                    'card': card,
-                    'mm': mm,
-                    'yy': yy,
-                    'full_year': full_year,
-                    'cvv': cvv,
-                    'formatted': formatted,
-                    'bin': bin_number,
-                    'bin_info': bin_info_str,
-                    'brand': bin_details.get('brand', 'Unknown'),
-                    'type': bin_details.get('type', 'Unknown'),
-                    'country': bin_details.get('country', 'Unknown'),
-                    'country_flag': bin_details.get('country_flag', ''),
-                    'country_code': bin_details.get('country_code', ''),
-                    'bank': bin_details.get('bank', 'Unknown'),
-                    'level': bin_details.get('level', ''),
-                    'expiry': f"{mm}/{yy}"
-                }
-                
-                batch_results.append((formatted, card_data))
-        
-        return batch_results, batch_duplicates, batch_expired, batch_junk, batch_total_raw
-    
-    # Process batches in parallel
-    with ThreadPoolExecutor(max_workers=min(8, multiprocessing.cpu_count())) as executor:
-        futures = [executor.submit(process_batch, batch) for batch in batches]
-        
-        for future in as_completed(futures):
-            try:
-                batch_results, batch_duplicates, batch_expired, batch_junk, batch_total_raw = future.result()
-                duplicates += batch_duplicates
-                expired += batch_expired
-                junk += batch_junk
-                total_raw += batch_total_raw
-                
-                for formatted, card_data in batch_results:
-                    # Global de-dupe across batches happens here in the main thread.
-                    if formatted in seen_cards:
-                        duplicates += 1
-                        continue
-                    seen_cards.add(formatted)
-                    valid_cards.append(card_data)
-            except Exception as e:
-                print(f"Error processing batch: {e}")
+            if len(cvv) < 3:
+                stats['junk'] += 1
                 continue
+            
+            # Luhn check
+            if not _fast_luhn(cc):
+                stats['junk'] += 1
+                continue
+            
+            # Expiry check
+            if not _fast_expiry_check(mm, yy):
+                stats['expired'] += 1
+                continue
+            
+            # Dedup
+            key = f"{cc}|{mm}|{yy}|{cvv}"
+            if key in seen:
+                stats['duplicates'] += 1
+                continue
+            seen.add(key)
+            
+            # Store minimal card data
+            bin_num = cc[:6]
+            full_year = 2000 + int(yy)
+            
+            card_data = {
+                'card': cc,
+                'mm': mm,
+                'yy': yy,
+                'cvv': cvv,
+                'formatted': key,
+                'bin': bin_num,
+                'full_year': full_year
+            }
+            
+            cards.append(card_data)
+            
+            # Organize by BIN
+            if bin_num not in by_bin:
+                by_bin[bin_num] = []
+            by_bin[bin_num].append(card_data)
+            
+            # Organize by month
+            if mm not in by_month:
+                by_month[mm] = []
+            by_month[mm].append(card_data)
+            
+            # Organize by year
+            if yy not in by_year:
+                by_year[yy] = []
+            by_year[yy].append(card_data)
+            
+            # Organize by year_month
+            if full_year not in by_year_month:
+                by_year_month[full_year] = {}
+            if mm not in by_year_month[full_year]:
+                by_year_month[full_year][mm] = []
+            by_year_month[full_year][mm].append(card_data)
     
-    # Organize cards by categories
+    stats['valid'] = len(cards)
+    stats['bins_found'] = len(by_bin)
+    stats['processing_time'] = time.time() - start_time
+    
     organized = {
-        'all_cards': valid_cards,
-        'by_bin': {},
-        'by_country': {},
+        'all': cards,
+        'by_bin': by_bin,
+        'by_month': by_month,
+        'by_year': by_year,
+        'by_year_month': by_year_month,
+        'by_brand': {},
         'by_type': {},
         'by_level': {},
-        'by_brand': {},
-        'by_expiry_year': {},
-        'by_expiry_month': {},
+        'by_country': {},
         'by_bank': {},
-        'by_year_month': {}  # New: Nested year->month structure
+        'by_expiry_month': by_month,  # Alias for compatibility
+        '_bin_info_loaded': False
     }
     
-    # Count unique bins
-    unique_bins = set()
+    # Add stats
+    stats['years_found'] = len(by_year)
+    stats['months_found'] = len(by_month)
+    stats['types_found'] = 0
+    stats['levels_found'] = 0
+    stats['brands_found'] = 0
+    stats['countries_found'] = 0
+    stats['banks_found'] = 0
     
-    for card in valid_cards:
-        # Organize by BIN
-        bin_key = card['bin']
-        unique_bins.add(bin_key)
-        if bin_key not in organized['by_bin']:
-            organized['by_bin'][bin_key] = []
-        organized['by_bin'][bin_key].append(card)
-        
-        # Organize by Country
-        country = card['country']
-        if country not in organized['by_country']:
-            organized['by_country'][country] = []
-        organized['by_country'][country].append(card)
-        
-        # Organize by Type
-        card_type = card['type']
-        if card_type not in organized['by_type']:
-            organized['by_type'][card_type] = []
-        organized['by_type'][card_type].append(card)
-        
-        # Organize by Level
-        level = card['level'] or 'Unknown'
-        if level not in organized['by_level']:
-            organized['by_level'][level] = []
-        organized['by_level'][level].append(card)
-        
-        # Organize by Brand
-        brand = card['brand']
-        if brand not in organized['by_brand']:
-            organized['by_brand'][brand] = []
-        organized['by_brand'][brand].append(card)
-        
-        # Organize by Expiry Year
-        year = card['full_year']
-        if year not in organized['by_expiry_year']:
-            organized['by_expiry_year'][year] = []
-        organized['by_expiry_year'][year].append(card)
-        
-        # Organize by Expiry Month
-        month = card['mm']
-        if month not in organized['by_expiry_month']:
-            organized['by_expiry_month'][month] = []
-        organized['by_expiry_month'][month].append(card)
-        
-        # Organize by nested Year->Month
-        if year not in organized['by_year_month']:
-            organized['by_year_month'][year] = {}
-        if month not in organized['by_year_month'][year]:
-            organized['by_year_month'][year][month] = []
-        organized['by_year_month'][year][month].append(card)
-        
-        # Organize by Bank
-        bank = card['bank']
-        if bank not in organized['by_bank']:
-            organized['by_bank'][bank] = []
-        organized['by_bank'][bank].append(card)
+    return organized, stats
+
+def _load_clean_bin_details(organized: dict, stats: dict) -> None:
+    """Lazy load BIN details for /clean (brand, type, level, country, bank)"""
+    if organized.get('_bin_info_loaded'):
+        return
     
-    processing_time = time.time() - start_time
+    # Sort BINs by count and limit for speed
+    sorted_bins = sorted(organized['by_bin'].items(), key=lambda x: -len(x[1]))[:150]
     
-    stats = {
-        'total_raw': total_raw,
-        'valid': len(valid_cards),
-        'junk': junk,
-        'duplicates': duplicates,
-        'expired': expired,
-        'bins_found': len(unique_bins),
-        'processing_time': processing_time,
-        'countries_found': len(organized['by_country']),
-        'types_found': len(organized['by_type']),
-        'brands_found': len(organized['by_brand']),
-        'levels_found': len(organized['by_level']),
-        'years_found': len(organized['by_expiry_year'])
-    }
+    for bin_num, cards_list in sorted_bins:
+        try:
+            info_str, details = get_bin_info(bin_num)
+            if not details:
+                continue
+            
+            # Update each card with BIN info
+            for card in cards_list:
+                card['bin_info'] = info_str
+                card['brand'] = details.get('brand', 'Unknown')
+                card['type'] = details.get('type', 'Unknown')
+                card['level'] = details.get('level', '')
+                card['country'] = details.get('country', 'Unknown')
+                card['country_flag'] = details.get('country_flag', '')
+                card['bank'] = details.get('bank', 'Unknown')
+            
+            # Organize by brand
+            brand = (details.get('brand') or '').upper()
+            if brand and brand != 'UNKNOWN':
+                if brand not in organized['by_brand']:
+                    organized['by_brand'][brand] = []
+                organized['by_brand'][brand].extend(cards_list)
+            
+            # Organize by type
+            card_type = (details.get('type') or '').upper()
+            if card_type and card_type != 'UNKNOWN':
+                if card_type not in organized['by_type']:
+                    organized['by_type'][card_type] = []
+                organized['by_type'][card_type].extend(cards_list)
+            
+            # Organize by level
+            level = (details.get('level') or '').upper()
+            if level:
+                if level not in organized['by_level']:
+                    organized['by_level'][level] = []
+                organized['by_level'][level].extend(cards_list)
+            
+            # Organize by country
+            country = details.get('country') or ''
+            flag = details.get('country_flag') or ''
+            if country:
+                country_key = f"{flag} {country}" if flag else country
+                if country_key not in organized['by_country']:
+                    organized['by_country'][country_key] = []
+                organized['by_country'][country_key].extend(cards_list)
+            
+            # Organize by bank
+            bank = details.get('bank') or ''
+            if bank and bank != 'Unknown':
+                if bank not in organized['by_bank']:
+                    organized['by_bank'][bank] = []
+                organized['by_bank'][bank].extend(cards_list)
+        except:
+            continue
+    
+    # Update stats
+    stats['brands_found'] = len(organized['by_brand'])
+    stats['types_found'] = len(organized['by_type'])
+    stats['levels_found'] = len(organized['by_level'])
+    stats['countries_found'] = len(organized['by_country'])
+    stats['banks_found'] = len(organized['by_bank'])
+    
+    organized['_bin_info_loaded'] = True
+
+# Legacy compatibility functions
+def is_card_expired(mm, yy):
+    """Check if card is expired (MM/YY format) - legacy wrapper"""
+    return not _fast_expiry_check(mm, yy)
+
+def luhn_check(card_number):
+    """Validate card number using Luhn algorithm - legacy wrapper"""
+    return _fast_luhn(str(card_number).replace(" ", "").replace("-", ""))
+
+def extract_and_clean_cards_advanced(data_text):
+    """
+    OPTIMIZED card extraction - wrapper around fast function.
+    Handles 300MB+ files with lazy BIN loading.
+    Returns tuple: (valid_cards_dict, stats_dict)
+    """
+    if not data_text or not isinstance(data_text, str):
+        return {}, {
+            'total_raw': 0, 'valid': 0, 'junk': 0, 'duplicates': 0,
+            'expired': 0, 'bins_found': 0, 'processing_time': 0
+        }
+    
+    # Use fast extraction
+    organized, stats = extract_and_clean_cards_fast(data_text)
+    
+    # Map new structure to legacy structure for backward compatibility
+    organized['all_cards'] = organized.get('all', [])
+    organized['by_expiry_year'] = {}
+    for yy, cards in organized.get('by_year', {}).items():
+        full_year = 2000 + int(yy) if len(yy) == 2 else int(yy)
+        organized['by_expiry_year'][full_year] = cards
     
     return organized, stats
 
@@ -1828,8 +1787,8 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check for document attachment
         if replied_msg.document:
             file_size = replied_msg.document.file_size
-            if file_size > 20 * 1024 * 1024:  # 20MB limit for /clean
-                await update.message.reply_text("⚠️ File too large. Maximum size is 20MB.", reply_to_message_id=update.message.message_id)
+            if file_size > 500 * 1024 * 1024:  # 500MB limit for /clean
+                await update.message.reply_text("⚠️ File too large. Maximum size is 500MB.", reply_to_message_id=update.message.message_id)
                 return
             
             # Download file
@@ -1855,19 +1814,18 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not data_text or not data_text.strip():
         usage_text = (
-            "🧹 Advanced Card Cleaner\n\n"
+            "🧹 Advanced Card Cleaner (OPTIMIZED)\n\n"
             "📝 Usage:\n"
             "• /clean <messy_data> - Clean & organize cards\n"
-            "• Reply to a message with /clean - Extract from text\n"
-            "• Reply to any file with /clean - Extract from file\n\n"
+            "• Reply to a message with /clean\n"
+            "• Reply to a file with /clean\n\n"
             "⚡ Features:\n"
-            "• Advanced card validation\n"
-            "• BIN database lookup\n"
-            "• Multi-category organization\n"
-            "• Interactive button system\n"
-            "• Export by category\n\n"
-            "📁 File support: TXT, CSV, JSON, DOC, etc.\n"
-            "💾 Max size: 20MB\n\n"
+            "• Ultra-fast processing (300MB+ support)\n"
+            "• Luhn validation & expiry check\n"
+            "• BIN lookup (lazy-loaded)\n"
+            "• Interactive filters\n"
+            "• Multi-category export\n\n"
+            "📁 Supports: TXT, CSV, JSON, any text file\n\n"
             "Example:\n"
             "/clean 4403932640339759 03/27 401\n"
             "5583410027167381 05/30 896"
@@ -1895,19 +1853,6 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"♻️ Duplicates removed: {stats['duplicates']}"
             )
             return
-        
-        # Get top countries with flags
-        top_countries = get_top_countries(organized_data['by_country'])
-        top_countries_text_list = []
-        for country, count in top_countries:
-            # Get flag for country
-            flag = ""
-            country_cards = organized_data['by_country'].get(country, [])
-            if country_cards:
-                flag = country_cards[0].get('country_flag', '')
-            top_countries_text_list.append(f"{flag} {country} ({count})")
-        
-        top_countries_text = ", ".join(top_countries_text_list)
         
         # Generate session ID (shorter)
         session_id = f"c_{uid}_{int(time.time()) % 10000}"
@@ -1941,33 +1886,31 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Expired Removed: {stats['expired']:,}\n"
             f"• Duplicates Removed: {stats['duplicates']:,}\n"
             f"• Unique BINs: {stats['bins_found']:,}\n\n"
-            f"🌍 Top Countries\n"
-            f"• {top_countries_text}\n\n"
-            f"📋 Session ID: {session_id}\n"
-            f"👤 User: {username}\n"
-            f"⏱ Processing Time: {processing_time:.2f}s\n\n"
-            f"📁 Select a category to explore:"
+            f"⏱ Processing: {processing_time:.2f}s\n"
+            f"📋 Session: {session_id}\n"
+            f"👤 User: {username}\n\n"
+            f"📁 Select a category:"
         )
         
-        # Create category buttons - 2 buttons per row (SHORTENED CALLBACK DATA)
+        # Create category buttons - 2 buttons per row (OPTIMIZED)
         keyboard = []
         
-        # Row 1: BINs and Countries
+        # Row 1: BINs and Expiry (fast categories)
         keyboard.append([
             InlineKeyboardButton(f"🔢 BINs ({stats['bins_found']})", callback_data=f"c_cat:b:0:{session_id}"),
-            InlineKeyboardButton(f"🌍 Countries ({stats['countries_found']})", callback_data=f"c_cat:co:0:{session_id}")
-        ])
-        
-        # Row 2: Types and Levels
-        keyboard.append([
-            InlineKeyboardButton(f"💳 Types ({stats['types_found']})", callback_data=f"c_cat:t:0:{session_id}"),
-            InlineKeyboardButton(f"⭐ Levels ({stats['levels_found']})", callback_data=f"c_cat:l:0:{session_id}")
-        ])
-        
-        # Row 3: Brands and Expiry
-        keyboard.append([
-            InlineKeyboardButton(f"🏦 Brands ({stats['brands_found']})", callback_data=f"c_cat:br:0:{session_id}"),
             InlineKeyboardButton(f"📅 Expiry ({stats['years_found']} yrs)", callback_data=f"c_cat:e:0:{session_id}")
+        ])
+        
+        # Row 2: Countries and Types (lazy-load)
+        keyboard.append([
+            InlineKeyboardButton("🌍 Countries", callback_data=f"c_cat:co:0:{session_id}"),
+            InlineKeyboardButton("💳 Types", callback_data=f"c_cat:t:0:{session_id}")
+        ])
+        
+        # Row 3: Levels and Brands (lazy-load)
+        keyboard.append([
+            InlineKeyboardButton("⭐ Levels", callback_data=f"c_cat:l:0:{session_id}"),
+            InlineKeyboardButton("🏦 Brands", callback_data=f"c_cat:br:0:{session_id}")
         ])
         
         # Row 4: All Cards and Clear
@@ -1976,7 +1919,7 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🗑️ Clear", callback_data=f"c_clr:{session_id}")
         ])
         
-        # NEW: Row 5 - Bin Search Button
+        # Row 5 - Bin Search Button
         keyboard.append([
             InlineKeyboardButton("🔍 Search BIN", callback_data=f"c_bin_search:{session_id}")
         ])
@@ -2063,19 +2006,6 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = session_data['username']
         processing_time = session_data['processing_time']
         
-        # Get top countries with flags
-        top_countries = get_top_countries(organized_data['by_country'])
-        top_countries_text_list = []
-        for country, count in top_countries:
-            # Get flag for country
-            flag = ""
-            country_cards = organized_data['by_country'].get(country, [])
-            if country_cards:
-                flag = country_cards[0].get('country_flag', '')
-            top_countries_text_list.append(f"{flag} {country} ({count})")
-        
-        top_countries_text = ", ".join(top_countries_text_list)
-        
         # Prepare main message with PLAIN TEXT
         stats_text = (
             f"🧹 Cleaning Results\n"
@@ -2087,33 +2017,31 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Expired Removed: {stats['expired']:,}\n"
             f"• Duplicates Removed: {stats['duplicates']:,}\n"
             f"• Unique BINs: {stats['bins_found']:,}\n\n"
-            f"🌍 Top Countries\n"
-            f"• {top_countries_text}\n\n"
-            f"📋 Session ID: {session_id}\n"
-            f"👤 User: {username}\n"
-            f"⏱ Processing Time: {processing_time:.2f}s\n\n"
-            f"📁 Select a category to explore:"
+            f"⏱ Processing: {processing_time:.2f}s\n"
+            f"📋 Session: {session_id}\n"
+            f"👤 User: {username}\n\n"
+            f"📁 Select a category:"
         )
         
         # Create category buttons - 2 buttons per row
         keyboard = []
         
-        # Row 1: BINs and Countries
+        # Row 1: BINs and Expiry (fast categories)
         keyboard.append([
             InlineKeyboardButton(f"🔢 BINs ({stats['bins_found']})", callback_data=f"c_cat:b:0:{session_id}"),
-            InlineKeyboardButton(f"🌍 Countries ({stats['countries_found']})", callback_data=f"c_cat:co:0:{session_id}")
-        ])
-        
-        # Row 2: Types and Levels
-        keyboard.append([
-            InlineKeyboardButton(f"💳 Types ({stats['types_found']})", callback_data=f"c_cat:t:0:{session_id}"),
-            InlineKeyboardButton(f"⭐ Levels ({stats['levels_found']})", callback_data=f"c_cat:l:0:{session_id}")
-        ])
-        
-        # Row 3: Brands and Expiry
-        keyboard.append([
-            InlineKeyboardButton(f"🏦 Brands ({stats['brands_found']})", callback_data=f"c_cat:br:0:{session_id}"),
             InlineKeyboardButton(f"📅 Expiry ({stats['years_found']} yrs)", callback_data=f"c_cat:e:0:{session_id}")
+        ])
+        
+        # Row 2: Countries and Types (lazy-load)
+        keyboard.append([
+            InlineKeyboardButton("🌍 Countries", callback_data=f"c_cat:co:0:{session_id}"),
+            InlineKeyboardButton("💳 Types", callback_data=f"c_cat:t:0:{session_id}")
+        ])
+        
+        # Row 3: Levels and Brands (lazy-load)
+        keyboard.append([
+            InlineKeyboardButton("⭐ Levels", callback_data=f"c_cat:l:0:{session_id}"),
+            InlineKeyboardButton("🏦 Brands", callback_data=f"c_cat:br:0:{session_id}")
         ])
         
         # Row 4: All Cards and Clear
@@ -2122,7 +2050,7 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🗑️ Clear", callback_data=f"c_clr:{session_id}")
         ])
         
-        # NEW: Row 5 - Bin Search Button
+        # Row 5 - Bin Search Button
         keyboard.append([
             InlineKeyboardButton("🔍 Search BIN", callback_data=f"c_bin_search:{session_id}")
         ])
@@ -2159,18 +2087,33 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if category == "b":
             await show_bin_category(query, organized_data, session_id, page)
         elif category == "co":
+            # Lazy load BIN details if not loaded
+            if not organized_data.get('_bin_info_loaded'):
+                _load_clean_bin_details(organized_data, stats)
             await show_country_category(query, organized_data, session_id, page)
         elif category == "t":
+            # Lazy load BIN details if not loaded
+            if not organized_data.get('_bin_info_loaded'):
+                _load_clean_bin_details(organized_data, stats)
             await show_type_category(query, organized_data, session_id, page)
         elif category == "l":
+            # Lazy load BIN details if not loaded
+            if not organized_data.get('_bin_info_loaded'):
+                _load_clean_bin_details(organized_data, stats)
             await show_level_category(query, organized_data, session_id, page)
         elif category == "br":
+            # Lazy load BIN details if not loaded
+            if not organized_data.get('_bin_info_loaded'):
+                _load_clean_bin_details(organized_data, stats)
             await show_brand_category(query, organized_data, session_id, page)
         elif category == "e":
             await show_expiry_category(query, organized_data, session_id, page)
         elif category == "a":
             await show_all_cards(query, organized_data, session_id)
         elif category == "bank":
+            # Lazy load BIN details if not loaded
+            if not organized_data.get('_bin_info_loaded'):
+                _load_clean_bin_details(organized_data, stats)
             await show_bank_category(query, organized_data, session_id, page)
     
     # Handle subcategory selection (FIXED: Proper year-month handling)
@@ -2296,7 +2239,10 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     file_content += "="*50 + "\n\n"
                     
                     for card in cards:
-                        file_content += f"{card['formatted']} | {card['brand']} | {card['country']} | {card['bank']}\n"
+                        brand = card.get('brand', '-')
+                        country = card.get('country', '-')
+                        bank = card.get('bank', '-')
+                        file_content += f"{card['formatted']} | {brand} | {country} | {bank}\n"
                 
                 file_name = f"cards_{year}_{month}_{int(time.time())}.txt"
                 caption = f"📁 {len(cards):,} cards (Year-Month: {year}-{month})\n👤 Exported by: {username}"
@@ -2356,6 +2302,10 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif category == "bank":
                 cards = organized_data['by_bank'].get(identifier, [])
                 export_category_name = "bank"
+            elif category == "a":
+                # All cards export
+                cards = organized_data.get('all_cards', organized_data.get('all', []))
+                export_category_name = "all_cards"
         elif sub_type == "v":
             if category == "ey":
                 try:
@@ -2384,7 +2334,10 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_content += "="*50 + "\n\n"
             
             for card in cards:
-                file_content += f"{card['formatted']} | {card['brand']} | {card['country']} | {card['bank']}\n"
+                brand = card.get('brand', '-')
+                country = card.get('country', '-')
+                bank = card.get('bank', '-')
+                file_content += f"{card['formatted']} | {brand} | {country} | {bank}\n"
             
             file_name = f"{export_category_name}_{int(time.time())}.txt"
             caption = f"📁 {len(cards):,} cards with details ({export_category_name}: {identifier[:20]})\n👤 Exported by: {username}"
@@ -2813,16 +2766,38 @@ async def show_bin_details(query, organized_data, bin_num, session_id):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    # Get BIN info if not loaded
+    bin_info = sample_card.get('bin_info', '')
+    brand = sample_card.get('brand', 'Unknown')
+    card_type = sample_card.get('type', 'Unknown')
+    country = sample_card.get('country', 'Unknown')
+    country_flag = sample_card.get('country_flag', '')
+    bank = sample_card.get('bank', 'Unknown')
+    level = sample_card.get('level', '')
+    
+    # If BIN info not loaded, try to get it
+    if not bin_info or brand == 'Unknown':
+        try:
+            bin_info, details = get_bin_info(bin_num)
+            brand = details.get('brand', 'Unknown')
+            card_type = details.get('type', 'Unknown')
+            country = details.get('country', 'Unknown')
+            country_flag = details.get('country_flag', '')
+            bank = details.get('bank', 'Unknown')
+            level = details.get('level', '')
+        except:
+            pass
+    
     await query.edit_message_text(
         f"🔢 BIN Details\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"BIN: {bin_num}\n"
-        f"Info: {sample_card['bin_info']}{(' ' + sample_card.get('country_flag', '')) if sample_card.get('country_flag', '') else ''}\n"
-        f"Brand: {sample_card['brand']}\n"
-        f"Type: {sample_card['type']}\n"
-        f"Country: {sample_card['country_flag']} {sample_card['country']}\n"
-        f"Bank: {sample_card['bank']}\n"
-        f"Level: {sample_card['level'] or 'N/A'}\n\n"
+        f"Info: {bin_info}{(' ' + country_flag) if country_flag else ''}\n"
+        f"Brand: {brand}\n"
+        f"Type: {card_type}\n"
+        f"Country: {country_flag} {country}\n"
+        f"Bank: {bank}\n"
+        f"Level: {level or 'N/A'}\n\n"
         f"📊 Cards found: {len(cards):,}\n\n"
         f"📁 Export Options",
         reply_markup=reply_markup
