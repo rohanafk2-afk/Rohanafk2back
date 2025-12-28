@@ -4302,48 +4302,56 @@ def run_ze_process(card_input, update_dict):
 
         service = Service(executable_path=CHROME_DRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(10)
-        wait = WebDriverWait(driver, 2)  # Slightly increased for reliability
+        driver.set_page_load_timeout(15)
+        wait = WebDriverWait(driver, 3)
 
         driver.get("https://src.visa.com/login")
+        time.sleep(1)
 
-        # Dismiss cookie banner - click Accept or Reject all
-        time.sleep(0.8)
+        # Dismiss cookie banner - find Accept button explicitly
         try:
-            driver.execute_script("""
-                // Find and click Accept or Reject all button
-                var buttons = document.querySelectorAll('button');
-                for (var i = 0; i < buttons.length; i++) {
-                    var txt = buttons[i].innerText.toLowerCase();
-                    if (txt.includes('accept') || txt.includes('reject all')) {
-                        buttons[i].click();
-                        break;
-                    }
-                }
-                // Backup: remove any overlays
-                var overlay = document.getElementById('CookieReportsOverlay');
-                if (overlay) overlay.remove();
-            """)
+            accept_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(),'Accept') or contains(text(),'accept')]")))
+            driver.execute_script("arguments[0].click();", accept_btn)
+            time.sleep(0.3)
         except Exception:
-            pass
-        
-        time.sleep(0.4)
+            # Backup: try to remove overlay
+            try:
+                driver.execute_script("""
+                    var overlay = document.getElementById('CookieReportsOverlay');
+                    if (overlay) overlay.parentNode.removeChild(overlay);
+                    var banners = document.querySelectorAll('[class*="cookie"], [id*="cookie"], [class*="consent"]');
+                    banners.forEach(function(el) { el.style.display = 'none'; });
+                """)
+            except:
+                pass
 
-        # Fill email and proceed using JS
-        email_field = wait.until(EC.presence_of_element_located((By.ID, "email-input")))
-        driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles: true}));", email_field, get_random_email())
-        driver.execute_script("document.querySelector('[data-testid=\"continue-button\"]').click();")
+        # Fill email
+        email_field = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
+        email_field.clear()
+        email_field.send_keys(get_random_email())
         
-        time.sleep(0.5)  # Wait for next page
-        
-        # Use JS click for checkbox to bypass any overlays
+        # Click Continue button
         try:
-            checkbox = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]')))
-            driver.execute_script("arguments[0].click();", checkbox)
+            continue_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]')))
+            driver.execute_script("arguments[0].click();", continue_btn)
         except:
-            driver.execute_script("document.querySelector('[data-testid=\"terms-checkbox\"]').click();")
+            # Fallback: find by text
+            continue_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Continue')]")
+            driver.execute_script("arguments[0].click();", continue_btn)
         
-        driver.execute_script("document.querySelector('[data-testid=\"next-button\"]').click();")
+        time.sleep(1)  # Wait for next page to load
+        
+        # Terms checkbox
+        checkbox = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="terms-checkbox"], input[type="checkbox"]')))
+        driver.execute_script("arguments[0].click();", checkbox)
+        
+        # Next button
+        try:
+            next_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]')))
+            driver.execute_script("arguments[0].click();", next_btn)
+        except:
+            next_btn = driver.find_element(By.XPATH, "//button[contains(text(),'Next')]")
+            driver.execute_script("arguments[0].click();", next_btn)
 
         cc, mm, yy, real_cvv = split_card(card_input)
         bin_info, bin_flag = get_bin_info_local(cc[:6])
