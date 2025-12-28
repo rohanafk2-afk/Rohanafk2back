@@ -1467,7 +1467,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /cmds - Command list\n"
         "• /id - Your Telegram ID\n"
         "• /status - Bot status\n"
-        "• /health - Browser commands health\n"
         "• /version - Bot version info\n\n"
         "📝 *Card Format:*\n"
         "`CC|MM|YY|CVV` or `CC MM YY CVV`\n\n"
@@ -1777,7 +1776,6 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cmds — Show command list",
         "/id — Show your Telegram ID",
         "/status — Show bot status",
-        "/health — Browser commands health",
         "/version — Bot version info",
     ]))
 
@@ -1790,6 +1788,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/unban <id> — Unban user",
             "/on <cmd> — Enable command",
             "/off <cmd> — Disable command",
+            "/health — Browser commands health",
             "/ram — Show RAM/CPU/Disk details",
             "/cleanram [kill] — Best-effort memory cleanup",
             "/backup — Zip & send .py/.json files",
@@ -5906,6 +5905,16 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==== 13.5 /filter Command - Fast Card Filter & Organizer ====
 _filter_sessions = {}  # Store filter sessions
 
+def _escape_md(text: str) -> str:
+    """Escape Markdown special characters"""
+    if not text:
+        return ""
+    # Escape: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for c in chars:
+        text = text.replace(c, f'\\{c}')
+    return text
+
 def _parse_cards_fast(text: str) -> list:
     """Fast card parsing with regex - returns list of card dicts"""
     if not text:
@@ -6131,7 +6140,7 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Years: `{', '.join(years)}`\n"
             f"• Months: `{len(months)}`\n\n"
             f"⏱ *Time:* `{duration}s`\n"
-            f"👤 *User:* @{uname}",
+            f"👤 *User:* {_escape_md(uname)}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -6176,7 +6185,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_document(
             document=BytesIO(content.encode()),
             filename=filename,
-            caption=f"📥 {len(cards):,} cards\n👤 @{session['user']}"
+            caption=f"📥 {len(cards):,} cards\n👤 {session['user']}"
         )
         return
     
@@ -6219,8 +6228,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_document(
             document=BytesIO(content.encode()),
             filename=f"bin_{bin_num}_{len(cards)}.txt",
-            caption=f"🏦 BIN: `{bin_num}` {flag}\n📊 Cards: {len(cards)}\n💳 {info_str}",
-            parse_mode="Markdown"
+            caption=f"🏦 BIN: {bin_num} {flag}\n📊 Cards: {len(cards)}\n💳 {info_str}"
         )
         return
     
@@ -6357,7 +6365,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Cards: `{len(cards):,}`\n"
             f"• BINs: `{bins_count}`\n"
             f"• Years: `{', '.join(years)}`\n\n"
-            f"👤 @{session['user']}",
+            f"👤 {_escape_md(session['user'])}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -6393,8 +6401,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             info_str, details = get_bin_info(bin_num)
             flag = (details or {}).get("country_flag", "")
             await update.message.reply_text(
-                f"🔍 BIN `{bin_num}` not found in your data.\n\n💳 {info_str} {flag}",
-                parse_mode="Markdown",
+                f"🔍 BIN {bin_num} not found in your data.\n\n💳 {info_str} {flag}",
                 reply_to_message_id=update.message.message_id
             )
             return
@@ -6406,8 +6413,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_document(
             document=BytesIO(content.encode()),
             filename=f"bin_{bin_num}_{len(cards)}.txt",
-            caption=f"🏦 BIN: `{bin_num}` {flag}\n📊 Cards: {len(cards)}\n💳 {info_str}",
-            parse_mode="Markdown",
+            caption=f"🏦 BIN: {bin_num} {flag}\n📊 Cards: {len(cards)}\n💳 {info_str}",
             reply_to_message_id=update.message.message_id
         )
         return
