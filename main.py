@@ -432,7 +432,10 @@ def extract_card_input(raw_text):
     matches = re.findall(r"\d{12,19}.\d{1,2}.\d{2,4}.\d{3,4}", raw_text)
     return matches[0] if matches else None
 
-def get_random_cvv(original, used=set()):
+def get_random_cvv(original, used=None):
+    # NOTE: don't use a mutable default here; otherwise values leak across calls.
+    if used is None:
+        used = set()
     while True:
         new = ''.join(random.choices('0123456789', k=3))
         if new != original and new not in used:
@@ -531,6 +534,7 @@ def extract_and_clean_cards_advanced(data_text):
     batches = [lines[i:i + batch_size] for i in range(0, len(lines), batch_size)]
     
     valid_cards = []
+    # Global de-dupe set; only touched in the main thread to avoid races.
     seen_cards = set()
     duplicates = 0
     expired = 0
@@ -539,6 +543,7 @@ def extract_and_clean_cards_advanced(data_text):
     
     def process_batch(batch_lines):
         batch_results = []
+        batch_seen = set()
         batch_duplicates = 0
         batch_expired = 0
         batch_junk = 0
@@ -626,10 +631,11 @@ def extract_and_clean_cards_advanced(data_text):
                 # Format card
                 formatted = f"{card}|{mm}|{yy}|{cvv}"
                 
-                # Check for duplicates (thread-safe check)
-                if formatted in seen_cards:
+                # De-dupe within the batch (thread-local)
+                if formatted in batch_seen:
                     batch_duplicates += 1
                     continue
+                batch_seen.add(formatted)
                     
                 # Get BIN info
                 bin_number = card[:6]
@@ -675,11 +681,12 @@ def extract_and_clean_cards_advanced(data_text):
                 total_raw += batch_total_raw
                 
                 for formatted, card_data in batch_results:
-                    if formatted not in seen_cards:
-                        seen_cards.add(formatted)
-                        valid_cards.append(card_data)
-                    else:
+                    # Global de-dupe across batches happens here in the main thread.
+                    if formatted in seen_cards:
                         duplicates += 1
+                        continue
+                    seen_cards.add(formatted)
+                    valid_cards.append(card_data)
             except Exception as e:
                 print(f"Error processing batch: {e}")
                 continue
