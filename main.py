@@ -2011,8 +2011,19 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check for document attachment
         if replied_msg.document:
             file_size = replied_msg.document.file_size
-            if file_size > 500 * 1024 * 1024:  # 500MB limit for /clean
-                await update.message.reply_text("⚠️ File too large. Maximum size is 500MB.", reply_to_message_id=update.message.message_id)
+            # Telegram Bot API has 20MB download limit
+            if file_size > 20 * 1024 * 1024:
+                await update.message.reply_text(
+                    "⚠️ *File too large for Telegram API*\n\n"
+                    "Telegram limits file downloads to 20MB.\n\n"
+                    "📋 *Workarounds for large files:*\n"
+                    "1. Split your file into smaller parts (<20MB each)\n"
+                    "2. Paste the content directly in a message\n"
+                    "3. Use a file hosting service and send the text\n\n"
+                    f"Your file: {file_size / (1024*1024):.1f}MB",
+                    parse_mode="Markdown",
+                    reply_to_message_id=update.message.message_id
+                )
                 return
             
             # Download file
@@ -2038,21 +2049,21 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not data_text or not data_text.strip():
         usage_text = (
-            "🧹 Advanced Card Cleaner (OPTIMIZED)\n\n"
+            "🧹 Advanced Card Cleaner\n\n"
             "📝 Usage:\n"
             "• /clean <messy_data> - Clean & organize cards\n"
             "• Reply to a message with /clean\n"
             "• Reply to a file with /clean\n\n"
             "⚡ Features:\n"
-            "• Ultra-fast processing (300MB+ support)\n"
+            "• Ultra-fast processing\n"
             "• Luhn validation & expiry check\n"
             "• BIN lookup (lazy-loaded)\n"
             "• Interactive filters\n"
             "• Multi-category export\n\n"
-            "📁 Supports: TXT, CSV, JSON, any text file\n\n"
+            "📁 File limit: 20MB (Telegram API limit)\n"
+            "💡 For large files: Split into parts or paste directly\n\n"
             "Example:\n"
-            "/clean 4403932640339759 03/27 401\n"
-            "5583410027167381 05/30 896"
+            "/clean 4403932640339759 03/27 401"
         )
         await update.message.reply_text(usage_text, reply_to_message_id=update.message.message_id)
         return
@@ -5061,8 +5072,19 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check for document attachment
         if replied_msg.document:
             file_size = replied_msg.document.file_size
-            if file_size > 300 * 1024 * 1024:  # 300MB limit
-                await update.message.reply_text("⚠️ File too large. Maximum size is 300MB.", reply_to_message_id=update.message.message_id)
+            # Telegram Bot API has 20MB download limit
+            if file_size > 20 * 1024 * 1024:
+                await update.message.reply_text(
+                    "⚠️ *File too large for Telegram API*\n\n"
+                    "Telegram limits file downloads to 20MB.\n\n"
+                    "📋 *Workarounds for large files:*\n"
+                    "1. Split your file into smaller parts (<20MB each)\n"
+                    "2. Paste the content directly in a message\n"
+                    "3. Use a file hosting service and send the text\n\n"
+                    f"Your file: {file_size / (1024*1024):.1f}MB",
+                    parse_mode="Markdown",
+                    reply_to_message_id=update.message.message_id
+                )
                 return
             
             # Download file
@@ -5642,8 +5664,19 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Check for file
         if replied.document:
-            if replied.document.file_size > 15 * 1024 * 1024:
-                await update.message.reply_text("⚠️ File too large. Max 15MB.", reply_to_message_id=update.message.message_id)
+            file_size = replied.document.file_size
+            # Telegram Bot API has 20MB download limit
+            if file_size > 20 * 1024 * 1024:
+                await update.message.reply_text(
+                    "⚠️ *File too large for Telegram API*\n\n"
+                    "Telegram limits file downloads to 20MB.\n\n"
+                    "📋 *Workarounds:*\n"
+                    "1. Split file into parts (<20MB)\n"
+                    "2. Paste content directly\n\n"
+                    f"Your file: {file_size / (1024*1024):.1f}MB",
+                    parse_mode="Markdown",
+                    reply_to_message_id=update.message.message_id
+                )
                 return
             
             msg = await update.message.reply_text("📥 Downloading...", reply_to_message_id=update.message.message_id)
