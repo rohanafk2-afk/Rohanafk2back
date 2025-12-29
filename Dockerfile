@@ -1,5 +1,5 @@
-# Use official Python slim image
-FROM python:3.12-slim
+# Use official Python slim image (3.11 for better compatibility)
+FROM python:3.11-slim
 
 # Avoids interactive dialog
 ENV DEBIAN_FRONTEND=noninteractive
@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install Chrome, ChromeDriver, and system dependencies (no apt-key usage!)
 RUN apt-get update && \
     apt-get install -y wget gnupg2 ca-certificates unzip fonts-liberation libnss3 libatk-bridge2.0-0 \
-        libgtk-3-0 libgbm1 libasound2 libxss1 libxtst6 curl && \
+        libgtk-3-0 libgbm1 libasound2 libxss1 libxtst6 curl gcc python3-dev && \
     mkdir -p /etc/apt/keyrings && \
     wget -q -O /etc/apt/keyrings/google-linux-signing-key.gpg https://dl.google.com/linux/linux_signing_key.pub && \
     echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-linux-signing-key.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
