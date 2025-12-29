@@ -7,4 +7,3 @@ names
 psutil
 requests
 faker
-pyrogram==2.0.106

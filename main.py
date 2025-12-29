@@ -36,10 +36,21 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from fake_useragent import UserAgent
 
-# ==== 1.1 Pyrogram Client for Large File Downloads ====
+# ==== 1.1 Pyrogram Client for Large File Downloads (OPTIONAL) ====
 # Pyrogram uses MTProto protocol - NO file size limits (supports 2GB+)
+# To enable: pip install pyrogram and set TELEGRAM_API_ID + TELEGRAM_API_HASH
 _pyrogram_client = None
 _pyrogram_lock = threading.Lock()
+_pyrogram_available = False
+
+# Check if pyrogram is installed
+try:
+    from pyrogram import Client as PyrogramClient
+    _pyrogram_available = True
+    print("✅ Pyrogram available - Large file support can be enabled")
+except ImportError:
+    _pyrogram_available = False
+    print("ℹ️ Pyrogram not installed - Using standard 20MB file limit")
 
 # Get API credentials from environment (required for Pyrogram)
 TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID") or os.environ.get("API_ID") or ""
@@ -49,6 +60,9 @@ async def get_pyrogram_client():
     """Get or create Pyrogram client for large file downloads"""
     global _pyrogram_client
     
+    if not _pyrogram_available:
+        return None
+    
     if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
         return None
     
@@ -56,8 +70,7 @@ async def get_pyrogram_client():
         with _pyrogram_lock:
             if _pyrogram_client is None:
                 try:
-                    from pyrogram import Client
-                    _pyrogram_client = Client(
+                    _pyrogram_client = PyrogramClient(
                         "bot_session",
                         api_id=int(TELEGRAM_API_ID),
                         api_hash=TELEGRAM_API_HASH,
@@ -67,7 +80,7 @@ async def get_pyrogram_client():
                     await _pyrogram_client.start()
                     print("✅ Pyrogram client started - Large file support enabled!")
                 except Exception as e:
-                    print(f"⚠️ Pyrogram init failed: {e} - Using standard 20MB limit")
+                    print(f"⚠️ Pyrogram init failed: {e}")
                     _pyrogram_client = None
     
     return _pyrogram_client
@@ -75,29 +88,26 @@ async def get_pyrogram_client():
 async def download_large_file(message, file_id: str) -> str:
     """
     Download files of ANY size using Pyrogram (MTProto).
-    Falls back to standard method for small files or if Pyrogram unavailable.
-    Returns file content as string.
+    Returns None if Pyrogram not available.
     """
+    if not _pyrogram_available:
+        return None
+        
     try:
         pyro_client = await get_pyrogram_client()
         
         if pyro_client and pyro_client.is_connected:
-            # Use Pyrogram for unlimited file size
-            import tempfile
             temp_path = tempfile.mktemp(suffix=".txt")
             
             try:
-                # Download using Pyrogram (no size limit)
                 await pyro_client.download_media(
                     message.reply_to_message.document.file_id,
                     file_name=temp_path
                 )
                 
-                # Read the file
                 with open(temp_path, 'rb') as f:
                     content = f.read()
                 
-                # Try decoding
                 for encoding in ['utf-8', 'latin-1', 'cp1252']:
                     try:
                         return content.decode(encoding)
@@ -105,13 +115,11 @@ async def download_large_file(message, file_id: str) -> str:
                         continue
                 return content.decode('utf-8', errors='ignore')
             finally:
-                # Cleanup temp file
                 try:
                     os.remove(temp_path)
                 except:
                     pass
         else:
-            # Fall back to standard Bot API (20MB limit)
             return None
             
     except Exception as e:
