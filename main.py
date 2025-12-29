@@ -126,6 +126,195 @@ async def download_large_file(message, file_id: str) -> str:
         print(f"Pyrogram download error: {e}")
         return None
 
+# ==== 1.3 External URL Download - Large Files WITHOUT API_ID/HASH ====
+# Supported file hosting services for large file downloads
+SUPPORTED_FILE_HOSTS = [
+    # Direct file hosts
+    'file.io', 'transfer.sh', '0x0.st', 'tmpfiles.org', 'litterbox.catbox.moe',
+    'catbox.moe', 'uguu.se', 'filebin.net', 'gofile.io', 'anonfiles.com',
+    # Paste services (raw URLs)
+    'pastebin.com', 'hastebin.com', 'rentry.co', 'dpaste.org', 'paste.ee',
+    'ghostbin.com', 'privatebin.net', 'paste.mozilla.org', 'bpa.st',
+    # Cloud storage (direct/public links)
+    'drive.google.com', 'dropbox.com', 'onedrive.live.com', 'mediafire.com',
+    # Raw GitHub
+    'raw.githubusercontent.com', 'gist.githubusercontent.com',
+    # Generic
+    'cdn.discordapp.com', 'files.catbox.moe'
+]
+
+# URL regex pattern
+URL_PATTERN = re.compile(
+    r'https?://[^\s<>"{}|\\^`\[\]]+',
+    re.IGNORECASE
+)
+
+def is_valid_file_url(url: str) -> bool:
+    """Check if URL is from a supported file host or looks like a direct file link"""
+    url_lower = url.lower()
+    
+    # Check supported hosts
+    for host in SUPPORTED_FILE_HOSTS:
+        if host in url_lower:
+            return True
+    
+    # Check if it's a direct file link (ends with file extension)
+    file_extensions = ['.txt', '.csv', '.json', '.log', '.dat', '.text']
+    for ext in file_extensions:
+        if url_lower.endswith(ext) or f'{ext}?' in url_lower:
+            return True
+    
+    # Check for raw/download indicators
+    raw_indicators = ['/raw/', '/download/', '/dl/', '/file/', '/get/', '/plain/']
+    for indicator in raw_indicators:
+        if indicator in url_lower:
+            return True
+    
+    return False
+
+def extract_url_from_text(text: str) -> str:
+    """Extract first valid file URL from text"""
+    if not text:
+        return None
+    
+    matches = URL_PATTERN.findall(text)
+    for url in matches:
+        # Clean URL
+        url = url.rstrip('.,;:!?)')
+        if is_valid_file_url(url):
+            return url
+    
+    # If no supported host, return first URL anyway (user might know what they're doing)
+    if matches:
+        return matches[0].rstrip('.,;:!?)')
+    
+    return None
+
+def convert_to_raw_url(url: str) -> str:
+    """Convert common paste/share URLs to raw download URLs"""
+    url = url.strip()
+    
+    # Pastebin
+    if 'pastebin.com/' in url and '/raw/' not in url:
+        paste_id = url.split('pastebin.com/')[-1].split('/')[0].split('?')[0]
+        if paste_id and paste_id != 'raw':
+            return f'https://pastebin.com/raw/{paste_id}'
+    
+    # Hastebin
+    if 'hastebin.com/' in url:
+        paste_id = url.split('hastebin.com/')[-1].split('/')[0].split('.')[0]
+        if paste_id and paste_id != 'raw':
+            return f'https://hastebin.com/raw/{paste_id}'
+    
+    # Rentry
+    if 'rentry.co/' in url and '/raw' not in url:
+        paste_id = url.split('rentry.co/')[-1].split('/')[0]
+        if paste_id:
+            return f'https://rentry.co/{paste_id}/raw'
+    
+    # GitHub blob to raw
+    if 'github.com/' in url and '/blob/' in url:
+        return url.replace('github.com/', 'raw.githubusercontent.com/').replace('/blob/', '/')
+    
+    # Dropbox - change dl=0 to dl=1
+    if 'dropbox.com/' in url:
+        if 'dl=0' in url:
+            return url.replace('dl=0', 'dl=1')
+        elif '?' not in url:
+            return url + '?dl=1'
+    
+    # Google Drive direct download
+    if 'drive.google.com/file/d/' in url:
+        file_id = url.split('/d/')[-1].split('/')[0]
+        return f'https://drive.google.com/uc?export=download&id={file_id}'
+    
+    return url
+
+async def download_from_url(url: str, max_size_mb: int = 500) -> tuple:
+    """
+    Download file content from external URL.
+    Returns (content, error_message).
+    Supports files up to 500MB (configurable).
+    NO API_ID/API_HASH required!
+    """
+    try:
+        # Convert to raw URL if needed
+        raw_url = convert_to_raw_url(url)
+        
+        session = get_http_session()
+        
+        # Stream download for memory efficiency
+        response = session.get(
+            raw_url,
+            stream=True,
+            timeout=120,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/plain,*/*'
+            },
+            allow_redirects=True
+        )
+        
+        if response.status_code != 200:
+            return None, f"HTTP {response.status_code}: Could not download from URL"
+        
+        # Check content length
+        content_length = response.headers.get('Content-Length')
+        if content_length:
+            size_mb = int(content_length) / (1024 * 1024)
+            if size_mb > max_size_mb:
+                return None, f"File too large ({size_mb:.1f}MB > {max_size_mb}MB limit)"
+        
+        # Download in chunks
+        chunks = []
+        total_size = 0
+        max_bytes = max_size_mb * 1024 * 1024
+        
+        for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
+            if chunk:
+                total_size += len(chunk)
+                if total_size > max_bytes:
+                    return None, f"File exceeds {max_size_mb}MB limit"
+                chunks.append(chunk)
+        
+        content = b''.join(chunks)
+        
+        # Try to decode
+        for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+            try:
+                return content.decode(encoding), None
+            except UnicodeDecodeError:
+                continue
+        
+        # Fallback with error handling
+        return content.decode('utf-8', errors='ignore'), None
+        
+    except requests.exceptions.Timeout:
+        return None, "Download timed out (>120s)"
+    except requests.exceptions.ConnectionError:
+        return None, "Could not connect to URL"
+    except Exception as e:
+        return None, f"Download error: {str(e)[:50]}"
+
+def get_large_file_help_text(file_size_mb: float = 0) -> str:
+    """Get help text for large file workaround"""
+    size_info = f"Your file: {file_size_mb:.1f}MB\n" if file_size_mb > 0 else ""
+    return (
+        f"⚠️ *Large File Support*\n\n"
+        f"{size_info}"
+        f"Telegram limit: 20MB\n\n"
+        f"*📤 FREE Workaround (No API needed):*\n"
+        f"1. Upload to any file host:\n"
+        f"   • file.io\n"
+        f"   • transfer.sh\n"
+        f"   • pastebin.com\n"
+        f"   • catbox.moe\n"
+        f"   • Any direct link!\n\n"
+        f"2. Send the URL:\n"
+        f"   `/clean https://file.io/abc123`\n\n"
+        f"✅ Supports up to 500MB files!"
+    )
+
 # ==== 1.2 Performance & Connection Pooling ====
 # Global session with connection pooling for faster HTTP requests
 _http_session = None
@@ -1727,9 +1916,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /zz <card> - Killed v5 (fast)\n"
         "• /dd <card> - Killed v6 (ultra-fast)\n\n"
         "🔧 *Data Processing:*\n"
-        "• /filter <data|file> - Fast card filter (new)\n"
-        "• /clean <data|file> - Advanced card cleaner\n"
-        "• /sort <data|file> - Clean & sort cards\n"
+        "• /filter <data|file|URL> - Fast card filter\n"
+        "• /clean <data|file|URL> - Advanced card cleaner\n"
+        "• /sort <data|file|URL> - Clean & sort cards\n"
         "• /bin <bins/cards> - BIN lookup\n\n"
         "🔍 *Details Fetching:*\n"
         "• /num <phone> - Get details by phone number\n"
@@ -2030,9 +2219,9 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Data Processing Tools
     parts.append("🔧 *Data Processing Tools*\n" + "\n".join([
-        lock("/filter <data|file> — Fast card filter (new)", "filter"),
-        lock("/clean <data|file> — Advanced cleaner & organizer", "clean"),
-        lock("/sort <data|file> — Clean & sort messy cards", "sort"),
+        lock("/filter <data|file|URL> — Fast card filter + URL support", "filter"),
+        lock("/clean <data|file|URL> — Advanced cleaner + URL support (500MB!)", "clean"),
+        lock("/sort <data|file|URL> — Clean & sort + URL support (500MB!)", "sort"),
         lock("/bin <bins/cards/mixed> — BIN lookup", "bin"),
     ]))
 
@@ -2113,12 +2302,7 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data_text = await download_large_file(update.message, replied_msg.document.file_id)
                     if data_text is None:
                         await processing_msg.edit_text(
-                            "⚠️ *Large file support not configured*\n\n"
-                            f"Your file: {file_size_mb:.1f}MB (limit: 20MB)\n\n"
-                            "To enable large file support, set env vars:\n"
-                            "• `TELEGRAM_API_ID`\n"
-                            "• `TELEGRAM_API_HASH`\n\n"
-                            "Get from: https://my.telegram.org",
+                            get_large_file_help_text(file_size_mb),
                             parse_mode="Markdown"
                         )
                         return
@@ -2135,8 +2319,7 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
                     await processing_msg.edit_text(
-                        "⚠️ Set `TELEGRAM_API_ID` & `TELEGRAM_API_HASH` for large files\n"
-                        "Get from: https://my.telegram.org",
+                        get_large_file_help_text(file_size_mb),
                         parse_mode="Markdown"
                     )
                 else:
@@ -2149,23 +2332,47 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get text from command arguments
         data_text = " ".join(context.args) if context.args else ""
     
+    # Check if input is a URL - download from external source (NO API_ID needed!)
+    if data_text and data_text.strip():
+        url = extract_url_from_text(data_text.strip())
+        if url:
+            processing_msg = await update.message.reply_text(
+                f"🌐 Downloading from URL...\n`{url[:50]}...`" if len(url) > 50 else f"🌐 Downloading from URL...\n`{url}`",
+                parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id
+            )
+            content, error = await download_from_url(url)
+            if error:
+                await processing_msg.edit_text(f"❌ {error}")
+                return
+            if not content or not content.strip():
+                await processing_msg.edit_text("❌ URL returned empty content.")
+                return
+            data_text = content
+            await processing_msg.edit_text("🔍 Processing downloaded data...")
+    
     if not data_text or not data_text.strip():
         usage_text = (
             "🧹 Advanced Card Cleaner\n\n"
             "📝 Usage:\n"
             "• /clean <messy_data> - Clean & organize cards\n"
             "• Reply to a message with /clean\n"
-            "• Reply to a file with /clean\n\n"
+            "• Reply to a file with /clean\n"
+            "• /clean <URL> - Download & clean from URL\n\n"
             "⚡ Features:\n"
             "• Ultra-fast processing\n"
             "• Luhn validation & expiry check\n"
             "• BIN lookup (lazy-loaded)\n"
             "• Interactive filters\n"
             "• Multi-category export\n\n"
-            "📁 File limit: 20MB (Telegram API limit)\n"
-            "💡 For large files: Split into parts or paste directly\n\n"
+            "📁 Telegram file limit: 20MB\n"
+            "🌐 URL download: Up to 500MB! (No API needed)\n\n"
+            "💡 For large files, upload to:\n"
+            "• file.io, pastebin.com, transfer.sh\n"
+            "Then: /clean <paste_url>\n\n"
             "Example:\n"
-            "/clean 4403932640339759 03/27 401"
+            "/clean 4403932640339759 03/27 401\n"
+            "/clean https://pastebin.com/raw/abc123"
         )
         await update.message.reply_text(usage_text, reply_to_message_id=update.message.message_id)
         return
@@ -5186,12 +5393,7 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data_text = await download_large_file(update.message, replied_msg.document.file_id)
                     if data_text is None:
                         await processing_msg.edit_text(
-                            "⚠️ *Large file support not configured*\n\n"
-                            f"Your file: {file_size_mb:.1f}MB (limit: 20MB)\n\n"
-                            "To enable, set env vars:\n"
-                            "• `TELEGRAM_API_ID`\n"
-                            "• `TELEGRAM_API_HASH`\n\n"
-                            "Get from: https://my.telegram.org",
+                            get_large_file_help_text(file_size_mb),
                             parse_mode="Markdown"
                         )
                         return
@@ -5208,7 +5410,7 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
                     await processing_msg.edit_text(
-                        "⚠️ Set `TELEGRAM_API_ID` & `TELEGRAM_API_HASH` for large files",
+                        get_large_file_help_text(file_size_mb),
                         parse_mode="Markdown"
                     )
                 else:
@@ -5221,18 +5423,41 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get text from command arguments
         data_text = " ".join(context.args) if context.args else ""
     
+    # Check if input is a URL - download from external source (NO API_ID needed!)
+    if data_text and data_text.strip():
+        url = extract_url_from_text(data_text.strip())
+        if url:
+            processing_msg = await update.message.reply_text(
+                f"🌐 Downloading from URL...\n`{url[:50]}...`" if len(url) > 50 else f"🌐 Downloading from URL...\n`{url}`",
+                parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id
+            )
+            content, error = await download_from_url(url)
+            if error:
+                await processing_msg.edit_text(f"❌ {error}")
+                return
+            if not content or not content.strip():
+                await processing_msg.edit_text("❌ URL returned empty content.")
+                return
+            data_text = content
+            await processing_msg.edit_text("🔍 Processing downloaded data...")
+    
     if not data_text or not data_text.strip():
         usage_text = (
             "📝 *Usage:*\n"
             "• `/sort <messy_data>` - Sort cards from text\n"
-            "• Reply to a message with `/sort` - Extract from text\n"
-            "• Reply to a .txt/.csv/.json file with `/sort` - Extract from file\n\n"
-            "📁 *Supported file formats:* TXT, CSV, JSON\n"
-            "⚡ *Processing speed:* Up to 50k cards\n"
-            "📊 *Output format:* CC|MM|YY|CVV\n\n"
+            "• Reply to a message with `/sort`\n"
+            "• Reply to a file with `/sort`\n"
+            "• `/sort <URL>` - Download & sort from URL\n\n"
+            "📁 *Supported:* TXT, CSV, JSON\n"
+            "🌐 *URL download:* Up to 500MB (No API needed!)\n"
+            "📊 *Output:* CC|MM|YY|CVV\n\n"
+            "💡 For large files, upload to:\n"
+            "• file.io, pastebin.com, transfer.sh\n"
+            "Then: `/sort <paste_url>`\n\n"
             "*Example:*\n"
-            "`/sort 4403932640339759 03/27 401\n"
-            "5583410027167381 05/30 896`"
+            "`/sort 4403932640339759 03/27 401`\n"
+            "`/sort https://pastebin.com/raw/abc123`"
         )
         await update.message.reply_text(usage_text, parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         return
@@ -5790,11 +6015,7 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data_text = await download_large_file(update.message, replied.document.file_id)
                     if data_text is None:
                         await msg.edit_text(
-                            "⚠️ *Large file support not configured*\n\n"
-                            f"Your file: {file_size_mb:.1f}MB\n\n"
-                            "Set env vars for large files:\n"
-                            "• `TELEGRAM_API_ID`\n"
-                            "• `TELEGRAM_API_HASH`",
+                            get_large_file_help_text(file_size_mb),
                             parse_mode="Markdown"
                         )
                         return
@@ -5806,7 +6027,7 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
-                    await msg.edit_text("⚠️ Set `TELEGRAM_API_ID` & `TELEGRAM_API_HASH` for large files", parse_mode="Markdown")
+                    await msg.edit_text(get_large_file_help_text(file_size_mb), parse_mode="Markdown")
                 else:
                     await msg.edit_text(f"❌ Error: {error_msg[:50]}")
                 return
@@ -5815,20 +6036,44 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         data_text = " ".join(context.args) if context.args else ""
     
+    # Check if input is a URL - download from external source (NO API_ID needed!)
+    if data_text and data_text.strip():
+        url = extract_url_from_text(data_text.strip())
+        if url:
+            processing_msg = await update.message.reply_text(
+                f"🌐 Downloading from URL...\n`{url[:50]}...`" if len(url) > 50 else f"🌐 Downloading from URL...\n`{url}`",
+                parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id
+            )
+            content, error = await download_from_url(url)
+            if error:
+                await processing_msg.edit_text(f"❌ {error}")
+                return
+            if not content or not content.strip():
+                await processing_msg.edit_text("❌ URL returned empty content.")
+                return
+            data_text = content
+            await processing_msg.edit_text("🔍 Processing downloaded data...")
+    
     if not data_text.strip():
         await update.message.reply_text(
             "🔍 *Fast Card Filter*\n\n"
             "*Usage:*\n"
             "• `/filter <data>` - Filter cards from text\n"
             "• Reply to message with `/filter`\n"
-            "• Reply to file with `/filter`\n\n"
+            "• Reply to file with `/filter`\n"
+            "• `/filter <URL>` - Download & filter from URL\n\n"
             "*Features:*\n"
             "• ⚡ Ultra-fast processing\n"
             "• ✅ Luhn validation\n"
             "• 📅 Expiry check\n"
             "• 🏦 BIN lookup\n"
             "• 📊 Organize by BIN/Month/Year\n\n"
-            "*Max file size:* 15MB",
+            "📁 Telegram limit: 20MB\n"
+            "🌐 URL download: Up to 500MB! (No API needed)\n\n"
+            "💡 For large files, upload to:\n"
+            "• file.io, pastebin.com, transfer.sh\n"
+            "Then: `/filter <paste_url>`",
             parse_mode="Markdown",
             reply_to_message_id=update.message.message_id
         )
