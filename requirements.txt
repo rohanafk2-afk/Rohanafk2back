@@ -7,5 +7,4 @@ names
 psutil
 requests
 faker
-pyrogram
-tgcrypto
+pyrogram==2.0.106
