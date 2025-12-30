@@ -4750,20 +4750,38 @@ async def str_single_main(card_input, update_dict):
     username = update_dict.get("username", "User")
     bot = Bot(BOT_TOKEN)
 
+    # Helper to update status message
+    async def update_status(text):
+        try:
+            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode="Markdown")
+        except Exception:
+            pass
+
+    # Step 1: Parse card
+    await update_status(f"💳 `{card_input}`\n\n⏳ **Step 1/4:** Parsing card...")
+    
     parsed = parse_card_input(card_input)
     if not parsed:
-        await bot.edit_message_text(
-            chat_id=chat_id, message_id=msg_id,
-            text="❌ Invalid format.\nUse: `/str 4111111111111111|08|25|123`",
-            parse_mode="Markdown"
-        )
+        await update_status("❌ **Step 1 Failed:** Invalid card format.\nUse: `/str 4111111111111111|08|25|123`")
         return
 
     card, mm, yy, cvv = parsed
     full_card = f"{card}|{mm}|20{yy}|{cvv}"
     start_time = time.time()
+    
+    await update_status(f"💳 `{full_card}`\n\n✅ **Step 1/4:** Card parsed\n⏳ **Step 2/4:** Fetching BIN info...")
+
+    # Step 2: Get BIN info
     bin_info, bin_details = get_bin_info(card[:6])
     bin_flag = (bin_details or {}).get("country_flag", "")
+    
+    await update_status(
+        f"💳 `{full_card}`\n"
+        f"🏦 `{bin_info}` {bin_flag}\n\n"
+        f"✅ **Step 1/4:** Card parsed\n"
+        f"✅ **Step 2/4:** BIN info fetched\n"
+        f"⏳ **Step 3/4:** Connecting to Stripe API..."
+    )
 
     # Stripe publishable keys from various merchants (rotate for reliability)
     stripe_keys = [
@@ -4779,6 +4797,15 @@ async def str_single_main(card_input, update_dict):
     for attempt in range(1, 4):
         attempt_used = attempt
         try:
+            # Update status for each attempt
+            await update_status(
+                f"💳 `{full_card}`\n"
+                f"🏦 `{bin_info}` {bin_flag}\n\n"
+                f"✅ **Step 1/4:** Card parsed\n"
+                f"✅ **Step 2/4:** BIN info fetched\n"
+                f"⏳ **Step 3/4:** Sending to Stripe API (Attempt {attempt}/3)..."
+            )
+            
             # Select a Stripe key (rotate through attempts)
             pk_key = stripe_keys[(attempt - 1) % len(stripe_keys)]
             
@@ -4808,6 +4835,16 @@ async def str_single_main(card_input, update_dict):
                 headers=headers,
                 data=pm_data,
                 timeout=30
+            )
+            
+            # Step 4: Process response
+            await update_status(
+                f"💳 `{full_card}`\n"
+                f"🏦 `{bin_info}` {bin_flag}\n\n"
+                f"✅ **Step 1/4:** Card parsed\n"
+                f"✅ **Step 2/4:** BIN info fetched\n"
+                f"✅ **Step 3/4:** Request sent (Attempt {attempt}/3)\n"
+                f"⏳ **Step 4/4:** Processing response..."
             )
             
             result = resp.json()
@@ -4866,6 +4903,13 @@ async def str_single_main(card_input, update_dict):
                 status = "Error"
         
         if attempt < 3:
+            await update_status(
+                f"💳 `{full_card}`\n"
+                f"🏦 `{bin_info}` {bin_flag}\n\n"
+                f"✅ **Step 1/4:** Card parsed\n"
+                f"✅ **Step 2/4:** BIN info fetched\n"
+                f"⚠️ **Step 3/4:** Attempt {attempt} failed, retrying..."
+            )
             await asyncio.sleep(1)  # Brief delay between retries
 
     took = f"{time.time() - start_time:.2f}s"
