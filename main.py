@@ -1456,6 +1456,8 @@ def _analyze_site(url: str) -> dict:
         "cloudflare": False,
         "checkout_page": False,
         "payment_page": False,
+        "checkout_links": [],
+        "payment_links": [],
         "ssl": False,
         "error": None,
     }
