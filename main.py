@@ -1657,10 +1657,75 @@ def _analyze_site(url: str) -> dict:
         if "cf-ray" in resp.headers or "cf-cache-status" in resp.headers:
             result["cloudflare"] = True
         
-        # ============ CHECKOUT/PAYMENT PAGE DETECTION ============
+        # ============ CHECKOUT/PAYMENT PAGE DETECTION & LINK EXTRACTION ============
+        # Get base URL for relative links
+        from urllib.parse import urljoin, urlparse
+        base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+        
+        # Extract all links from HTML (case-insensitive)
+        original_html = resp.text  # Keep original case for URL extraction
+        link_pattern = r'href=["\']([^"\']+)["\']'
+        all_links = re.findall(link_pattern, original_html, re.IGNORECASE)
+        
+        # Checkout link patterns
+        checkout_url_patterns = [
+            r'/checkout', r'/cart', r'/basket', r'/order', r'/pay',
+            r'/purchase', r'/buy', r'/billing', r'/shipping',
+            r'checkout\.', r'cart\.', r'pay\.', r'secure\.'
+        ]
+        
+        # Payment/Add card link patterns
+        payment_url_patterns = [
+            r'/payment', r'/add-payment', r'/payment-method', r'/add-card',
+            r'/my-account/payment', r'/account/payment', r'/wallet',
+            r'/credit-card', r'/card', r'/subscribe', r'/donate'
+        ]
+        
+        checkout_links_found = set()
+        payment_links_found = set()
+        
+        for link in all_links:
+            link_lower = link.lower()
+            
+            # Skip non-page links
+            if any(skip in link_lower for skip in ['javascript:', 'mailto:', 'tel:', '#', '.css', '.js', '.png', '.jpg', '.gif', '.svg']):
+                continue
+            
+            # Check for checkout links
+            for pattern in checkout_url_patterns:
+                if re.search(pattern, link_lower):
+                    # Convert to absolute URL
+                    if link.startswith('http'):
+                        full_link = link
+                    elif link.startswith('/'):
+                        full_link = base_url + link
+                    else:
+                        full_link = urljoin(url, link)
+                    checkout_links_found.add(full_link)
+                    result["checkout_page"] = True
+                    break
+            
+            # Check for payment links
+            for pattern in payment_url_patterns:
+                if re.search(pattern, link_lower):
+                    if link.startswith('http'):
+                        full_link = link
+                    elif link.startswith('/'):
+                        full_link = base_url + link
+                    else:
+                        full_link = urljoin(url, link)
+                    payment_links_found.add(full_link)
+                    result["payment_page"] = True
+                    break
+        
+        # Store unique links (limit to 3 each)
+        result["checkout_links"] = list(checkout_links_found)[:3]
+        result["payment_links"] = list(payment_links_found)[:3]
+        
+        # Also check page content for indicators
         checkout_indicators = [
-            "checkout", "cart", "basket", "payment", "pay now",
-            "place order", "complete order", "billing", "shipping address"
+            "checkout", "cart", "basket", "pay now",
+            "place order", "complete order"
         ]
         for indicator in checkout_indicators:
             if indicator in html:
@@ -1668,8 +1733,8 @@ def _analyze_site(url: str) -> dict:
                 break
         
         payment_indicators = [
-            "credit card", "card number", "cvv", "cvc", "expiry",
-            "payment method", "add card", "payment-form", "pay-form"
+            "credit card", "card number", "cvv", "cvc",
+            "payment method", "add card"
         ]
         for indicator in payment_indicators:
             if indicator in html:
@@ -1724,11 +1789,23 @@ def _format_site_result(result: dict, index: int = None) -> str:
     else:
         lines.append("🤖 **Captcha:** None detected")
     
+    # Checkout page with clickable links
     if result["checkout_page"]:
-        lines.append("🛒 **Checkout Page:** ✅ Found")
+        checkout_links = result.get("checkout_links", [])
+        if checkout_links:
+            links_text = " | ".join([f"[Open]({link})" for link in checkout_links[:2]])
+            lines.append(f"🛒 **Checkout:** ✅ Found → {links_text}")
+        else:
+            lines.append("🛒 **Checkout:** ✅ Found")
     
+    # Payment page with clickable links
     if result["payment_page"]:
-        lines.append("💰 **Payment Form:** ✅ Found")
+        payment_links = result.get("payment_links", [])
+        if payment_links:
+            links_text = " | ".join([f"[Open]({link})" for link in payment_links[:2]])
+            lines.append(f"💰 **Payment:** ✅ Found → {links_text}")
+        else:
+            lines.append("💰 **Payment:** ✅ Found")
     
     return "\n".join(lines)
 
