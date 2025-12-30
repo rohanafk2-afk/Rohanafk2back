@@ -595,7 +595,7 @@ def get_health_bar(health: int) -> str:
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "filter", "num", "adhar")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "filter", "num", "adhar", "site")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -1440,6 +1440,386 @@ async def adhar_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)[:100]}", reply_to_message_id=update.message.message_id)
 
+# ==== 4.35 /site Command - Website Gateway & Captcha Analyzer ====
+def _analyze_site(url: str) -> dict:
+    """
+    Analyze a website for payment gateways, captcha, platform, etc.
+    Returns a dict with all detected information.
+    """
+    result = {
+        "url": url,
+        "status": "error",
+        "status_code": None,
+        "platform": [],
+        "gateways": [],
+        "captcha": [],
+        "cloudflare": False,
+        "checkout_page": False,
+        "payment_page": False,
+        "ssl": False,
+        "error": None,
+    }
+    
+    # Normalize URL
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    
+    result["url"] = url
+    result["ssl"] = url.startswith("https://")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive",
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        result["status_code"] = resp.status_code
+        html = resp.text.lower()
+        
+        if resp.status_code == 200:
+            result["status"] = "success"
+        else:
+            result["status"] = "error"
+            result["error"] = f"HTTP {resp.status_code}"
+            return result
+        
+        # ============ PAYMENT GATEWAYS ============
+        gateway_patterns = {
+            "Stripe": [
+                "stripe.com", "js.stripe.com", "stripe.js", "stripe-js",
+                "pk_live_", "pk_test_", "stripe.createtoken", "stripe.confirmpayment",
+                "stripecheckout", "stripe-checkout", "data-stripe"
+            ],
+            "Braintree": [
+                "braintree", "braintreegateway", "braintree-web", "braintree.js",
+                "client.create", "braintreepayments", "hosted-fields"
+            ],
+            "PayPal": [
+                "paypal.com", "paypalobjects.com", "paypal-sdk", "paypal-buttons",
+                "paypal.buttons", "paypal-checkout", "braintree.paypal"
+            ],
+            "Square": [
+                "squareup.com", "square.js", "squarecdn.com", "square-payment",
+                "sq-payment-form", "squarepaymentform"
+            ],
+            "Authorize.net": [
+                "authorize.net", "authorizenet", "accept.js", "acceptjs",
+                "anet.js", "authorizeaccept"
+            ],
+            "Adyen": [
+                "adyen.com", "adyencheckout", "adyen-checkout", "adyen.js",
+                "checkoutshopper-live", "checkoutshopper-test"
+            ],
+            "Worldpay": [
+                "worldpay.com", "worldpay.js", "worldpayonline", "worldpay-checkout"
+            ],
+            "Klarna": [
+                "klarna.com", "klarnacdn", "klarna-checkout", "klarna.js",
+                "klarna-payments"
+            ],
+            "Razorpay": [
+                "razorpay.com", "razorpay.js", "checkout.razorpay",
+                "razorpay-payment"
+            ],
+            "2Checkout": [
+                "2checkout.com", "2co.com", "2checkout-inline", "2checkout.js"
+            ],
+            "Mollie": [
+                "mollie.com", "mollie.js", "molliepayments"
+            ],
+            "Shopify Payments": [
+                "shop.app", "shopifypay", "shopify-payment", "checkout.shopify"
+            ],
+            "WooCommerce Payments": [
+                "woocommerce-payments", "wc-payments", "wcpay"
+            ],
+            "CyberSource": [
+                "cybersource.com", "cybersource.js", "flex-v2"
+            ],
+            "NMI": [
+                "nmi.com", "collectjs", "collect.js", "tokenization"
+            ],
+            "Checkout.com": [
+                "checkout.com", "cko-", "frames.js"
+            ],
+        }
+        
+        for gateway, patterns in gateway_patterns.items():
+            for pattern in patterns:
+                if pattern in html:
+                    if gateway not in result["gateways"]:
+                        result["gateways"].append(gateway)
+                    break
+        
+        # ============ CAPTCHA DETECTION ============
+        captcha_patterns = {
+            "reCAPTCHA v2": [
+                "g-recaptcha", "grecaptcha", "recaptcha.net", "recaptcha/api.js",
+                "recaptcha-checkbox", "data-sitekey"
+            ],
+            "reCAPTCHA v3": [
+                "recaptcha/api.js?render=", "grecaptcha.execute", "recaptcha-v3",
+                "recaptcha.net/recaptcha/api.js?render"
+            ],
+            "hCaptcha": [
+                "hcaptcha.com", "h-captcha", "hcaptcha-checkbox", "hcaptcha.render"
+            ],
+            "Cloudflare Turnstile": [
+                "turnstile", "cf-turnstile", "challenges.cloudflare.com/turnstile",
+                "cfcdn-turnstile"
+            ],
+            "Arkose Labs (FunCaptcha)": [
+                "funcaptcha", "arkoselabs", "arkose.com", "funcaptcha.com"
+            ],
+            "GeeTest": [
+                "geetest", "gt_captcha", "initgeetest"
+            ],
+            "KeyCaptcha": [
+                "keycaptcha"
+            ],
+            "MTCaptcha": [
+                "mtcaptcha"
+            ],
+            "Friendly Captcha": [
+                "friendlycaptcha"
+            ],
+        }
+        
+        for captcha, patterns in captcha_patterns.items():
+            for pattern in patterns:
+                if pattern in html:
+                    if captcha not in result["captcha"]:
+                        result["captcha"].append(captcha)
+                    break
+        
+        # ============ PLATFORM DETECTION ============
+        platform_patterns = {
+            "Shopify": [
+                "shopify.com", "cdn.shopify", "myshopify.com", "shopify-section"
+            ],
+            "WooCommerce": [
+                "woocommerce", "wc-ajax", "wp-content", "add_to_cart",
+                "woocommerce-page", "wc-block"
+            ],
+            "Magento": [
+                "magento", "mage/", "varien", "magentocommerce",
+                "skin/frontend", "mageplaza"
+            ],
+            "BigCommerce": [
+                "bigcommerce", "bccdn.net", "bigcommerce.com"
+            ],
+            "PrestaShop": [
+                "prestashop", "presta", "prestashop.com"
+            ],
+            "OpenCart": [
+                "opencart", "catalog/view"
+            ],
+            "Squarespace": [
+                "squarespace.com", "squarespace-cdn", "static.squarespace"
+            ],
+            "Wix": [
+                "wix.com", "wixsite.com", "parastorage.com", "wix-code"
+            ],
+            "WordPress": [
+                "wp-content", "wp-includes", "wordpress"
+            ],
+            "Drupal": [
+                "drupal", "sites/all", "sites/default"
+            ],
+            "Laravel": [
+                "laravel", "_token", "csrf-token"
+            ],
+        }
+        
+        for platform, patterns in platform_patterns.items():
+            for pattern in patterns:
+                if pattern in html:
+                    if platform not in result["platform"]:
+                        result["platform"].append(platform)
+                    break
+        
+        # ============ CLOUDFLARE DETECTION ============
+        cloudflare_signs = [
+            "cloudflare", "cf-ray", "__cfduid", "cf-connecting",
+            "cloudflare.com", "cdn-cgi", "cf-browser"
+        ]
+        for sign in cloudflare_signs:
+            if sign in html or sign in str(resp.headers).lower():
+                result["cloudflare"] = True
+                break
+        
+        # Check headers for Cloudflare
+        if "cf-ray" in resp.headers or "cf-cache-status" in resp.headers:
+            result["cloudflare"] = True
+        
+        # ============ CHECKOUT/PAYMENT PAGE DETECTION ============
+        checkout_indicators = [
+            "checkout", "cart", "basket", "payment", "pay now",
+            "place order", "complete order", "billing", "shipping address"
+        ]
+        for indicator in checkout_indicators:
+            if indicator in html:
+                result["checkout_page"] = True
+                break
+        
+        payment_indicators = [
+            "credit card", "card number", "cvv", "cvc", "expiry",
+            "payment method", "add card", "payment-form", "pay-form"
+        ]
+        for indicator in payment_indicators:
+            if indicator in html:
+                result["payment_page"] = True
+                break
+        
+    except requests.exceptions.Timeout:
+        result["status"] = "error"
+        result["error"] = "Request timed out"
+    except requests.exceptions.SSLError:
+        result["status"] = "error"
+        result["error"] = "SSL certificate error"
+    except requests.exceptions.ConnectionError:
+        result["status"] = "error"
+        result["error"] = "Connection failed"
+    except Exception as e:
+        result["status"] = "error"
+        result["error"] = str(e)[:100]
+    
+    return result
+
+def _format_site_result(result: dict, index: int = None) -> str:
+    """Format the site analysis result for display."""
+    prefix = f"**[{index}]** " if index else ""
+    
+    if result["status"] == "error":
+        return (
+            f"{prefix}🌐 `{result['url']}`\n"
+            f"❌ **Error:** {result.get('error', 'Unknown error')}\n"
+        )
+    
+    lines = [f"{prefix}🌐 `{result['url']}`"]
+    status_text = "✅ Online" if result['status_code'] == 200 else f"⚠️ HTTP {result['status_code']}"
+    lines.append(f"📡 **Status:** {status_text}")
+    lines.append(f"🔒 **SSL:** {'✅ Yes' if result['ssl'] else '❌ No'}")
+    
+    if result["cloudflare"]:
+        lines.append("☁️ **Cloudflare:** ✅ Detected")
+    
+    if result["platform"]:
+        lines.append(f"🛒 **Platform:** {', '.join(result['platform'])}")
+    else:
+        lines.append("🛒 **Platform:** Unknown")
+    
+    if result["gateways"]:
+        lines.append(f"💳 **Gateways:** {', '.join(result['gateways'])}")
+    else:
+        lines.append("💳 **Gateways:** None detected")
+    
+    if result["captcha"]:
+        lines.append(f"🤖 **Captcha:** {', '.join(result['captcha'])}")
+    else:
+        lines.append("🤖 **Captcha:** None detected")
+    
+    if result["checkout_page"]:
+        lines.append("🛒 **Checkout Page:** ✅ Found")
+    
+    if result["payment_page"]:
+        lines.append("💰 **Payment Form:** ✅ Found")
+    
+    return "\n".join(lines)
+
+async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Analyze website(s) for payment gateways, captcha, platform, etc."""
+    uid = update.effective_user.id
+    
+    if not is_approved(uid, "site"):
+        await update.message.reply_text("⛔ You are not approved to use this command.", reply_to_message_id=update.message.message_id)
+        return
+    
+    if not is_cmd_enabled("site"):
+        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
+        return
+    
+    raw_input = " ".join(context.args).strip() if context.args else ""
+    
+    if not raw_input:
+        await update.message.reply_text(
+            "⚠️ **Usage:** `/site <url>` or `/site <url1> <url2> ...`\n\n"
+            "**Examples:**\n"
+            "• `/site example.com`\n"
+            "• `/site https://shop.com https://store.com`\n\n"
+            "**Detects:**\n"
+            "• 💳 Payment Gateways (Stripe, Braintree, PayPal, etc.)\n"
+            "• 🤖 Captcha (reCAPTCHA, hCaptcha, Turnstile, etc.)\n"
+            "• 🛒 Platform (Shopify, WooCommerce, Magento, etc.)\n"
+            "• ☁️ Cloudflare protection\n"
+            "• 🔒 SSL status\n\n"
+            "**Max:** 10 sites at once",
+            parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id
+        )
+        return
+    
+    # Extract URLs (split by space, comma, or newline)
+    urls = re.split(r'[\s,\n]+', raw_input)
+    urls = [u.strip() for u in urls if u.strip()]
+    
+    # Limit to 10 URLs
+    if len(urls) > 10:
+        await update.message.reply_text(
+            f"⚠️ Maximum 10 sites allowed. You provided {len(urls)}.\nOnly first 10 will be checked.",
+            reply_to_message_id=update.message.message_id
+        )
+        urls = urls[:10]
+    
+    # Initial message
+    msg = await update.message.reply_text(
+        f"🔍 **Analyzing {len(urls)} site(s)...**\n\n⏳ Starting...",
+        parse_mode="Markdown",
+        reply_to_message_id=update.message.message_id
+    )
+    
+    all_results = []
+    
+    for i, url in enumerate(urls, 1):
+        # Update progress
+        try:
+            await msg.edit_text(
+                f"🔍 **Analyzing {len(urls)} site(s)...**\n\n"
+                f"⏳ Checking site {i}/{len(urls)}: `{url[:50]}`...",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+        
+        # Analyze site
+        result = _analyze_site(url)
+        all_results.append(result)
+        
+        # Brief delay between requests
+        if i < len(urls):
+            await asyncio.sleep(0.5)
+    
+    # Format final output
+    output_lines = [f"📊 **Site Analysis Results ({len(urls)} site{'s' if len(urls) > 1 else ''})**\n"]
+    
+    for i, result in enumerate(all_results, 1):
+        if len(urls) > 1:
+            output_lines.append(_format_site_result(result, i))
+        else:
+            output_lines.append(_format_site_result(result))
+        output_lines.append("")  # Empty line between results
+    
+    final_output = "\n".join(output_lines)
+    
+    # Truncate if too long
+    if len(final_output) > 4000:
+        final_output = final_output[:3950] + "\n\n... (truncated)"
+    
+    await msg.edit_text(final_output, parse_mode="Markdown")
+
 # ==== 4.4 Admin Commands: /on and /off ====
 async def on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Enable a command"""
@@ -1733,7 +2113,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /bin <bins/cards> - BIN lookup\n\n"
         "🔍 *Details Fetching:*\n"
         "• /num <phone> - Get details by phone number\n"
-        "• /adhar <aadhaar> - Get details by Aadhaar\n\n"
+        "• /adhar <aadhaar> - Get details by Aadhaar\n"
+        "• /site <url> - Analyze website gateway/captcha\n\n"
         "🧰 *Basic Commands:*\n"
         "• /start - Welcome message\n"
         "• /help - This help message\n"
@@ -2040,6 +2421,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts.append("🔍 *Details Fetching Tools*\n" + "\n".join([
         lock("/num <number> — Get details by phone number", "num"),
         lock("/adhar <aadhaar> — Get details by Aadhaar number", "adhar"),
+        lock("/site <url> — Analyze website gateway/captcha", "site"),
     ]))
 
     # Basic Tools
@@ -6625,6 +7007,7 @@ async def main():
         # New commands
         app.add_handler(CommandHandler("num", num_cmd))
         app.add_handler(CommandHandler("adhar", adhar_cmd))
+        app.add_handler(CommandHandler("site", site_cmd))
 
         # Callback handlers - FIXED PATTERNS with shorter prefixes
         app.add_handler(CallbackQueryHandler(sort_callback, pattern="^s_"))
