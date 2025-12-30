@@ -1464,10 +1464,18 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
         "error": None,
     }
     
-    # Normalize URL
+    # Normalize URL and extract main domain only
+    from urllib.parse import urlparse
+    
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     
+    # Extract main domain only (remove paths like /login, /checkout etc)
+    parsed = urlparse(url)
+    main_domain = f"{parsed.scheme}://{parsed.netloc}"
+    
+    # Use main domain for checking
+    url = main_domain
     result["url"] = url
     result["ssl"] = url.startswith("https://")
     
@@ -1643,14 +1651,14 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
     return result
 
 def _format_site_result_v2(result: dict, index: int = None) -> str:
-    """Format site analysis with clean UI (only ✓/✗ emojis)."""
+    """Format site analysis with clean UI (✅/❌ emojis)."""
     idx = f"[{index}] " if index else ""
     
     if result["status"] == "error":
         return (
             f"{'━'*32}\n"
             f"{idx}`{result['url']}`\n"
-            f"Status: ✗ {result.get('error', 'Error')}\n"
+            f"Status: ❌ {result.get('error', 'Unavailable')}\n"
         )
     
     lines = [f"{'━'*32}"]
@@ -1659,18 +1667,18 @@ def _format_site_result_v2(result: dict, index: int = None) -> str:
     # Status with code
     code = result.get('status_code', 0)
     if code == 200:
-        status = f"✓ Online `{code}`"
+        status = f"✅ Online `{code}`"
     elif 200 < code < 400:
-        status = f"→ Redirect `{code}`"
+        status = f"↗️ Redirect `{code}`"
     else:
-        status = f"✗ Error `{code}`"
+        status = f"❌ Error `{code}`"
     
     lines.append(f"Status: {status}")
-    lines.append(f"SSL: {'✓ Secure' if result['ssl'] else '✗ Not Secure'}")
+    lines.append(f"SSL: {'✅ Secure' if result['ssl'] else '❌ Not Secure'}")
     
     # Cloudflare
     if result["cloudflare"]:
-        lines.append("Cloudflare: ✓ Protected")
+        lines.append("Cloudflare: ✅ Protected")
     
     # Platform
     if result["platform"]:
@@ -1678,29 +1686,29 @@ def _format_site_result_v2(result: dict, index: int = None) -> str:
     
     # Gateways - important!
     if result["gateways"]:
-        lines.append(f"Gateway: `{', '.join(result['gateways'])}`")
+        lines.append(f"Gateway: ✅ `{', '.join(result['gateways'])}`")
     else:
-        lines.append("Gateway: ✗ Not detected")
+        lines.append("Gateway: ❌ Not detected")
     
-    # Captcha
+    # Captcha - No captcha = good (✅), Has captcha = bad (❌)
     if result["captcha"]:
-        lines.append(f"Captcha: `{', '.join(result['captcha'])}`")
+        lines.append(f"Captcha: ❌ `{', '.join(result['captcha'])}`")
     else:
-        lines.append("Captcha: ✓ None")
+        lines.append("Captcha: ✅ Clean (None)")
     
     # Checkout with links
     checkout_links = result.get("checkout_links", [])
     if checkout_links:
-        lines.append(f"Checkout: ✓ Found → [Click to Open]({checkout_links[0]})")
+        lines.append(f"Checkout: ✅ [Click to Open]({checkout_links[0]})")
     elif result["checkout_page"]:
-        lines.append("Checkout: ✓ Found on page")
+        lines.append("Checkout: ✅ Found")
     
     # Payment with links - IMPORTANT for /st type checks
     payment_links = result.get("payment_links", [])
     if payment_links:
-        lines.append(f"Payment Page: ✓ Found → [Click to Open]({payment_links[0]})")
+        lines.append(f"Payment: ✅ [Click to Open]({payment_links[0]})")
     elif result["payment_page"]:
-        lines.append("Payment Page: ✓ Found on page")
+        lines.append("Payment: ✅ Found")
     
     return "\n".join(lines)
 
