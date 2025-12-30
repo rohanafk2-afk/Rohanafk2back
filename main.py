@@ -1557,42 +1557,71 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
             result["cloudflare"] = True
         
         # ============ EXTRACT CHECKOUT/PAYMENT LINKS ============
-        link_pattern = r'href=["\']([^"\']*(?:checkout|cart|basket|payment|pay|order|billing|add-payment|payment-method|add-card|subscribe)[^"\']*)["\']'
-        found_links = re.findall(link_pattern, original_html, re.IGNORECASE)
+        # Find all href links
+        all_links = re.findall(r'href=["\']([^"\']+)["\']', original_html, re.IGNORECASE)
         
-        checkout_keywords = ['checkout', 'cart', 'basket', 'order', 'billing']
-        payment_keywords = ['payment', 'add-payment', 'payment-method', 'add-card', 'pay-method', 'wallet']
+        checkout_keywords = ['checkout', '/cart', '/basket', '/order', '/buy', '/purchase']
+        payment_keywords = [
+            'add-payment-method', 'add-payment', 'payment-method', 'payment-methods',
+            'add-card', '/payment', 'my-account/payment', 'account/payment',
+            'edit-payment', 'manage-payment', 'wallet', 'billing-method'
+        ]
         
-        for link in found_links:
+        for link in all_links:
+            link_lower = link.lower()
+            
             # Skip invalid links
-            if any(x in link.lower() for x in ['javascript:', 'mailto:', '.js', '.css', '.png', '.jpg', '#']):
+            if any(x in link_lower for x in ['javascript:', 'mailto:', 'tel:', '.js', '.css', '.png', '.jpg', '.gif', '.svg', '.ico', '#', 'void']):
                 continue
             
             # Build full URL
             if link.startswith('http'):
                 full_url = link
+            elif link.startswith('//'):
+                full_url = 'https:' + link
             elif link.startswith('/'):
                 full_url = base_url + link
             else:
                 full_url = urljoin(url, link)
             
-            link_lower = link.lower()
-            
-            # Categorize link
+            # Categorize link - Checkout
             if any(k in link_lower for k in checkout_keywords):
                 if full_url not in result["checkout_links"] and len(result["checkout_links"]) < 3:
                     result["checkout_links"].append(full_url)
                     result["checkout_page"] = True
             
+            # Categorize link - Payment
             if any(k in link_lower for k in payment_keywords):
                 if full_url not in result["payment_links"] and len(result["payment_links"]) < 3:
                     result["payment_links"].append(full_url)
                     result["payment_page"] = True
         
+        # ============ TRY COMMON PAYMENT PAGE PATHS ============
+        # If no payment links found, try common paths used by /st and similar
+        if not result["payment_links"]:
+            common_payment_paths = [
+                '/my-account/add-payment-method',
+                '/my-account/payment-methods',
+                '/account/add-payment-method',
+                '/checkout/add-payment',
+                '/my-account/add-card',
+            ]
+            
+            for path in common_payment_paths:
+                try:
+                    test_url = base_url + path
+                    test_resp = http.head(test_url, headers=headers, timeout=5, allow_redirects=True)
+                    if test_resp.status_code in [200, 301, 302]:
+                        result["payment_links"].append(test_url)
+                        result["payment_page"] = True
+                        break
+                except:
+                    continue
+        
         # Check content indicators
-        if any(x in html for x in ["checkout", "cart", "place order"]):
+        if any(x in html for x in ["checkout", "add to cart", "place order", "proceed to"]):
             result["checkout_page"] = True
-        if any(x in html for x in ["credit card", "card number", "cvv", "payment method"]):
+        if any(x in html for x in ["credit card", "card number", "cvv", "cvc", "payment method", "add payment"]):
             result["payment_page"] = True
         
     except requests.exceptions.Timeout:
@@ -1614,65 +1643,64 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
     return result
 
 def _format_site_result_v2(result: dict, index: int = None) -> str:
-    """Format site analysis with clean UI (minimal emojis)."""
+    """Format site analysis with clean UI (only ✓/✗ emojis)."""
     idx = f"[{index}] " if index else ""
     
     if result["status"] == "error":
         return (
-            f"{'━'*30}\n"
-            f"{idx}**{result['url']}**\n"
-            f"Status: ❌ {result.get('error', 'Error')}\n"
+            f"{'━'*32}\n"
+            f"{idx}`{result['url']}`\n"
+            f"Status: ✗ {result.get('error', 'Error')}\n"
         )
     
-    lines = [f"{'━'*30}"]
-    lines.append(f"{idx}**{result['url']}**")
+    lines = [f"{'━'*32}"]
+    lines.append(f"{idx}`{result['url']}`")
     
     # Status with code
     code = result.get('status_code', 0)
     if code == 200:
-        status = f"✓ Online ({code})"
+        status = f"✓ Online `{code}`"
     elif 200 < code < 400:
-        status = f"↻ Redirect ({code})"
+        status = f"→ Redirect `{code}`"
     else:
-        status = f"✗ Error ({code})"
+        status = f"✗ Error `{code}`"
     
-    lines.append(f"Status: {status} | SSL: {'✓' if result['ssl'] else '✗'}")
+    lines.append(f"Status: {status}")
+    lines.append(f"SSL: {'✓ Secure' if result['ssl'] else '✗ Not Secure'}")
     
     # Cloudflare
     if result["cloudflare"]:
-        lines.append(f"Protection: Cloudflare ✓")
+        lines.append("Cloudflare: ✓ Protected")
     
     # Platform
     if result["platform"]:
-        lines.append(f"Platform: {', '.join(result['platform'])}")
+        lines.append(f"Platform: `{', '.join(result['platform'])}`")
     
-    # Gateways
+    # Gateways - important!
     if result["gateways"]:
-        lines.append(f"Gateway: {', '.join(result['gateways'])}")
+        lines.append(f"Gateway: `{', '.join(result['gateways'])}`")
     else:
-        lines.append("Gateway: Not detected")
+        lines.append("Gateway: ✗ Not detected")
     
     # Captcha
     if result["captcha"]:
-        lines.append(f"Captcha: {', '.join(result['captcha'])}")
+        lines.append(f"Captcha: `{', '.join(result['captcha'])}`")
     else:
-        lines.append("Captcha: None")
+        lines.append("Captcha: ✓ None")
     
     # Checkout with links
     checkout_links = result.get("checkout_links", [])
     if checkout_links:
-        link = checkout_links[0]
-        lines.append(f"Checkout: [Open]({link})")
+        lines.append(f"Checkout: ✓ Found → [Click to Open]({checkout_links[0]})")
     elif result["checkout_page"]:
-        lines.append("Checkout: Found")
+        lines.append("Checkout: ✓ Found on page")
     
-    # Payment with links
+    # Payment with links - IMPORTANT for /st type checks
     payment_links = result.get("payment_links", [])
     if payment_links:
-        link = payment_links[0]
-        lines.append(f"Payment: [Open]({link})")
+        lines.append(f"Payment Page: ✓ Found → [Click to Open]({payment_links[0]})")
     elif result["payment_page"]:
-        lines.append("Payment: Found")
+        lines.append("Payment Page: ✓ Found on page")
     
     return "\n".join(lines)
 
