@@ -1441,11 +1441,13 @@ async def adhar_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {str(e)[:100]}", reply_to_message_id=update.message.message_id)
 
 # ==== 4.35 /site Command - Website Gateway & Captcha Analyzer ====
-def _analyze_site(url: str) -> dict:
+def _analyze_site(url: str, session: requests.Session = None) -> dict:
     """
     Analyze a website for payment gateways, captcha, platform, etc.
     Returns a dict with all detected information.
     """
+    from urllib.parse import urljoin, urlparse
+    
     result = {
         "url": url,
         "status": "error",
@@ -1473,347 +1475,213 @@ def _analyze_site(url: str) -> dict:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
-        "Connection": "keep-alive",
     }
     
+    # Use provided session or create new one
+    http = session or requests.Session()
+    
     try:
-        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        resp = http.get(url, headers=headers, timeout=15, allow_redirects=True)
         result["status_code"] = resp.status_code
-        html = resp.text.lower()
         
-        if resp.status_code == 200:
+        # Accept any 2xx or 3xx status
+        if 200 <= resp.status_code < 400:
             result["status"] = "success"
         else:
-            result["status"] = "error"
-            result["error"] = f"HTTP {resp.status_code}"
-            return result
+            result["status"] = "partial"
+        
+        html = resp.text.lower()
+        original_html = resp.text
+        base_url = f"{urlparse(resp.url).scheme}://{urlparse(resp.url).netloc}"
         
         # ============ PAYMENT GATEWAYS ============
         gateway_patterns = {
-            "Stripe": [
-                "stripe.com", "js.stripe.com", "stripe.js", "stripe-js",
-                "pk_live_", "pk_test_", "stripe.createtoken", "stripe.confirmpayment",
-                "stripecheckout", "stripe-checkout", "data-stripe"
-            ],
-            "Braintree": [
-                "braintree", "braintreegateway", "braintree-web", "braintree.js",
-                "client.create", "braintreepayments", "hosted-fields"
-            ],
-            "PayPal": [
-                "paypal.com", "paypalobjects.com", "paypal-sdk", "paypal-buttons",
-                "paypal.buttons", "paypal-checkout", "braintree.paypal"
-            ],
-            "Square": [
-                "squareup.com", "square.js", "squarecdn.com", "square-payment",
-                "sq-payment-form", "squarepaymentform"
-            ],
-            "Authorize.net": [
-                "authorize.net", "authorizenet", "accept.js", "acceptjs",
-                "anet.js", "authorizeaccept"
-            ],
-            "Adyen": [
-                "adyen.com", "adyencheckout", "adyen-checkout", "adyen.js",
-                "checkoutshopper-live", "checkoutshopper-test"
-            ],
-            "Worldpay": [
-                "worldpay.com", "worldpay.js", "worldpayonline", "worldpay-checkout"
-            ],
-            "Klarna": [
-                "klarna.com", "klarnacdn", "klarna-checkout", "klarna.js",
-                "klarna-payments"
-            ],
-            "Razorpay": [
-                "razorpay.com", "razorpay.js", "checkout.razorpay",
-                "razorpay-payment"
-            ],
-            "2Checkout": [
-                "2checkout.com", "2co.com", "2checkout-inline", "2checkout.js"
-            ],
-            "Mollie": [
-                "mollie.com", "mollie.js", "molliepayments"
-            ],
-            "Shopify Payments": [
-                "shop.app", "shopifypay", "shopify-payment", "checkout.shopify"
-            ],
-            "WooCommerce Payments": [
-                "woocommerce-payments", "wc-payments", "wcpay"
-            ],
-            "CyberSource": [
-                "cybersource.com", "cybersource.js", "flex-v2"
-            ],
-            "NMI": [
-                "nmi.com", "collectjs", "collect.js", "tokenization"
-            ],
-            "Checkout.com": [
-                "checkout.com", "cko-", "frames.js"
-            ],
+            "Stripe": ["stripe.com", "js.stripe.com", "stripe.js", "pk_live_", "pk_test_", "stripe-checkout"],
+            "Braintree": ["braintree", "braintreegateway", "braintree-web", "hosted-fields"],
+            "PayPal": ["paypal.com", "paypalobjects.com", "paypal-sdk", "paypal-buttons"],
+            "Square": ["squareup.com", "square.js", "squarecdn.com", "sq-payment-form"],
+            "Authorize.net": ["authorize.net", "authorizenet", "accept.js", "acceptjs"],
+            "Adyen": ["adyen.com", "adyencheckout", "adyen-checkout", "checkoutshopper"],
+            "Worldpay": ["worldpay.com", "worldpay.js", "worldpayonline"],
+            "Klarna": ["klarna.com", "klarnacdn", "klarna-checkout"],
+            "Razorpay": ["razorpay.com", "razorpay.js", "checkout.razorpay"],
+            "2Checkout": ["2checkout.com", "2co.com", "2checkout-inline"],
+            "Mollie": ["mollie.com", "mollie.js", "molliepayments"],
+            "Shopify Pay": ["shop.app", "shopifypay", "checkout.shopify"],
+            "WC Payments": ["woocommerce-payments", "wc-payments", "wcpay"],
+            "CyberSource": ["cybersource.com", "cybersource.js", "flex-v2"],
+            "NMI": ["collectjs", "collect.js"],
+            "Checkout.com": ["checkout.com", "cko-", "frames.js"],
         }
         
         for gateway, patterns in gateway_patterns.items():
-            for pattern in patterns:
-                if pattern in html:
-                    if gateway not in result["gateways"]:
-                        result["gateways"].append(gateway)
-                    break
+            if any(p in html for p in patterns):
+                result["gateways"].append(gateway)
         
         # ============ CAPTCHA DETECTION ============
         captcha_patterns = {
-            "reCAPTCHA v2": [
-                "g-recaptcha", "grecaptcha", "recaptcha.net", "recaptcha/api.js",
-                "recaptcha-checkbox", "data-sitekey"
-            ],
-            "reCAPTCHA v3": [
-                "recaptcha/api.js?render=", "grecaptcha.execute", "recaptcha-v3",
-                "recaptcha.net/recaptcha/api.js?render"
-            ],
-            "hCaptcha": [
-                "hcaptcha.com", "h-captcha", "hcaptcha-checkbox", "hcaptcha.render"
-            ],
-            "Cloudflare Turnstile": [
-                "turnstile", "cf-turnstile", "challenges.cloudflare.com/turnstile",
-                "cfcdn-turnstile"
-            ],
-            "Arkose Labs (FunCaptcha)": [
-                "funcaptcha", "arkoselabs", "arkose.com", "funcaptcha.com"
-            ],
-            "GeeTest": [
-                "geetest", "gt_captcha", "initgeetest"
-            ],
-            "KeyCaptcha": [
-                "keycaptcha"
-            ],
-            "MTCaptcha": [
-                "mtcaptcha"
-            ],
-            "Friendly Captcha": [
-                "friendlycaptcha"
-            ],
+            "reCAPTCHA v2": ["g-recaptcha", "recaptcha/api.js", "data-sitekey"],
+            "reCAPTCHA v3": ["recaptcha/api.js?render=", "grecaptcha.execute"],
+            "hCaptcha": ["hcaptcha.com", "h-captcha"],
+            "Turnstile": ["turnstile", "cf-turnstile", "challenges.cloudflare.com/turnstile"],
+            "Arkose": ["funcaptcha", "arkoselabs"],
+            "GeeTest": ["geetest", "initgeetest"],
         }
         
         for captcha, patterns in captcha_patterns.items():
-            for pattern in patterns:
-                if pattern in html:
-                    if captcha not in result["captcha"]:
-                        result["captcha"].append(captcha)
-                    break
+            if any(p in html for p in patterns):
+                result["captcha"].append(captcha)
         
         # ============ PLATFORM DETECTION ============
         platform_patterns = {
-            "Shopify": [
-                "shopify.com", "cdn.shopify", "myshopify.com", "shopify-section"
-            ],
-            "WooCommerce": [
-                "woocommerce", "wc-ajax", "wp-content", "add_to_cart",
-                "woocommerce-page", "wc-block"
-            ],
-            "Magento": [
-                "magento", "mage/", "varien", "magentocommerce",
-                "skin/frontend", "mageplaza"
-            ],
-            "BigCommerce": [
-                "bigcommerce", "bccdn.net", "bigcommerce.com"
-            ],
-            "PrestaShop": [
-                "prestashop", "presta", "prestashop.com"
-            ],
-            "OpenCart": [
-                "opencart", "catalog/view"
-            ],
-            "Squarespace": [
-                "squarespace.com", "squarespace-cdn", "static.squarespace"
-            ],
-            "Wix": [
-                "wix.com", "wixsite.com", "parastorage.com", "wix-code"
-            ],
-            "WordPress": [
-                "wp-content", "wp-includes", "wordpress"
-            ],
-            "Drupal": [
-                "drupal", "sites/all", "sites/default"
-            ],
-            "Laravel": [
-                "laravel", "_token", "csrf-token"
-            ],
+            "Shopify": ["cdn.shopify", "myshopify.com", "shopify-section"],
+            "WooCommerce": ["woocommerce", "wc-ajax", "woocommerce-page"],
+            "Magento": ["magento", "mage/", "magentocommerce"],
+            "BigCommerce": ["bigcommerce", "bccdn.net"],
+            "PrestaShop": ["prestashop"],
+            "OpenCart": ["opencart", "catalog/view"],
+            "Squarespace": ["squarespace.com", "static.squarespace"],
+            "Wix": ["wix.com", "parastorage.com"],
+            "WordPress": ["wp-content", "wp-includes"],
         }
         
         for platform, patterns in platform_patterns.items():
-            for pattern in patterns:
-                if pattern in html:
-                    if platform not in result["platform"]:
-                        result["platform"].append(platform)
-                    break
+            if any(p in html for p in patterns):
+                result["platform"].append(platform)
         
         # ============ CLOUDFLARE DETECTION ============
-        cloudflare_signs = [
-            "cloudflare", "cf-ray", "__cfduid", "cf-connecting",
-            "cloudflare.com", "cdn-cgi", "cf-browser"
-        ]
-        for sign in cloudflare_signs:
-            if sign in html or sign in str(resp.headers).lower():
-                result["cloudflare"] = True
-                break
-        
-        # Check headers for Cloudflare
+        cf_headers = str(resp.headers).lower()
+        if any(s in html or s in cf_headers for s in ["cloudflare", "cf-ray", "cdn-cgi"]):
+            result["cloudflare"] = True
         if "cf-ray" in resp.headers or "cf-cache-status" in resp.headers:
             result["cloudflare"] = True
         
-        # ============ CHECKOUT/PAYMENT PAGE DETECTION & LINK EXTRACTION ============
-        # Get base URL for relative links
-        from urllib.parse import urljoin, urlparse
-        base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+        # ============ EXTRACT CHECKOUT/PAYMENT LINKS ============
+        link_pattern = r'href=["\']([^"\']*(?:checkout|cart|basket|payment|pay|order|billing|add-payment|payment-method|add-card|subscribe)[^"\']*)["\']'
+        found_links = re.findall(link_pattern, original_html, re.IGNORECASE)
         
-        # Extract all links from HTML (case-insensitive)
-        original_html = resp.text  # Keep original case for URL extraction
-        link_pattern = r'href=["\']([^"\']+)["\']'
-        all_links = re.findall(link_pattern, original_html, re.IGNORECASE)
+        checkout_keywords = ['checkout', 'cart', 'basket', 'order', 'billing']
+        payment_keywords = ['payment', 'add-payment', 'payment-method', 'add-card', 'pay-method', 'wallet']
         
-        # Checkout link patterns
-        checkout_url_patterns = [
-            r'/checkout', r'/cart', r'/basket', r'/order', r'/pay',
-            r'/purchase', r'/buy', r'/billing', r'/shipping',
-            r'checkout\.', r'cart\.', r'pay\.', r'secure\.'
-        ]
-        
-        # Payment/Add card link patterns
-        payment_url_patterns = [
-            r'/payment', r'/add-payment', r'/payment-method', r'/add-card',
-            r'/my-account/payment', r'/account/payment', r'/wallet',
-            r'/credit-card', r'/card', r'/subscribe', r'/donate'
-        ]
-        
-        checkout_links_found = set()
-        payment_links_found = set()
-        
-        for link in all_links:
-            link_lower = link.lower()
-            
-            # Skip non-page links
-            if any(skip in link_lower for skip in ['javascript:', 'mailto:', 'tel:', '#', '.css', '.js', '.png', '.jpg', '.gif', '.svg']):
+        for link in found_links:
+            # Skip invalid links
+            if any(x in link.lower() for x in ['javascript:', 'mailto:', '.js', '.css', '.png', '.jpg', '#']):
                 continue
             
-            # Check for checkout links
-            for pattern in checkout_url_patterns:
-                if re.search(pattern, link_lower):
-                    # Convert to absolute URL
-                    if link.startswith('http'):
-                        full_link = link
-                    elif link.startswith('/'):
-                        full_link = base_url + link
-                    else:
-                        full_link = urljoin(url, link)
-                    checkout_links_found.add(full_link)
-                    result["checkout_page"] = True
-                    break
+            # Build full URL
+            if link.startswith('http'):
+                full_url = link
+            elif link.startswith('/'):
+                full_url = base_url + link
+            else:
+                full_url = urljoin(url, link)
             
-            # Check for payment links
-            for pattern in payment_url_patterns:
-                if re.search(pattern, link_lower):
-                    if link.startswith('http'):
-                        full_link = link
-                    elif link.startswith('/'):
-                        full_link = base_url + link
-                    else:
-                        full_link = urljoin(url, link)
-                    payment_links_found.add(full_link)
+            link_lower = link.lower()
+            
+            # Categorize link
+            if any(k in link_lower for k in checkout_keywords):
+                if full_url not in result["checkout_links"] and len(result["checkout_links"]) < 3:
+                    result["checkout_links"].append(full_url)
+                    result["checkout_page"] = True
+            
+            if any(k in link_lower for k in payment_keywords):
+                if full_url not in result["payment_links"] and len(result["payment_links"]) < 3:
+                    result["payment_links"].append(full_url)
                     result["payment_page"] = True
-                    break
         
-        # Store unique links (limit to 3 each)
-        result["checkout_links"] = list(checkout_links_found)[:3]
-        result["payment_links"] = list(payment_links_found)[:3]
-        
-        # Also check page content for indicators
-        checkout_indicators = [
-            "checkout", "cart", "basket", "pay now",
-            "place order", "complete order"
-        ]
-        for indicator in checkout_indicators:
-            if indicator in html:
-                result["checkout_page"] = True
-                break
-        
-        payment_indicators = [
-            "credit card", "card number", "cvv", "cvc",
-            "payment method", "add card"
-        ]
-        for indicator in payment_indicators:
-            if indicator in html:
-                result["payment_page"] = True
-                break
+        # Check content indicators
+        if any(x in html for x in ["checkout", "cart", "place order"]):
+            result["checkout_page"] = True
+        if any(x in html for x in ["credit card", "card number", "cvv", "payment method"]):
+            result["payment_page"] = True
         
     except requests.exceptions.Timeout:
-        result["status"] = "error"
-        result["error"] = "Request timed out"
+        result["error"] = "Timeout"
     except requests.exceptions.SSLError:
-        result["status"] = "error"
-        result["error"] = "SSL certificate error"
+        result["error"] = "SSL Error"
     except requests.exceptions.ConnectionError:
-        result["status"] = "error"
-        result["error"] = "Connection failed"
+        result["error"] = "Connection Failed"
     except Exception as e:
-        result["status"] = "error"
-        result["error"] = str(e)[:100]
+        result["error"] = str(e)[:50]
+    finally:
+        # Clean exit - close session if we created it
+        if session is None:
+            try:
+                http.close()
+            except:
+                pass
     
     return result
 
-def _format_site_result(result: dict, index: int = None) -> str:
-    """Format the site analysis result for display."""
-    prefix = f"**[{index}]** " if index else ""
+def _format_site_result_v2(result: dict, index: int = None) -> str:
+    """Format site analysis with clean UI (minimal emojis)."""
+    idx = f"[{index}] " if index else ""
     
     if result["status"] == "error":
         return (
-            f"{prefix}🌐 `{result['url']}`\n"
-            f"❌ **Error:** {result.get('error', 'Unknown error')}\n"
+            f"{'━'*30}\n"
+            f"{idx}**{result['url']}**\n"
+            f"Status: ❌ {result.get('error', 'Error')}\n"
         )
     
-    lines = [f"{prefix}🌐 `{result['url']}`"]
-    status_text = "✅ Online" if result['status_code'] == 200 else f"⚠️ HTTP {result['status_code']}"
-    lines.append(f"📡 **Status:** {status_text}")
-    lines.append(f"🔒 **SSL:** {'✅ Yes' if result['ssl'] else '❌ No'}")
+    lines = [f"{'━'*30}"]
+    lines.append(f"{idx}**{result['url']}**")
     
+    # Status with code
+    code = result.get('status_code', 0)
+    if code == 200:
+        status = f"✓ Online ({code})"
+    elif 200 < code < 400:
+        status = f"↻ Redirect ({code})"
+    else:
+        status = f"✗ Error ({code})"
+    
+    lines.append(f"Status: {status} | SSL: {'✓' if result['ssl'] else '✗'}")
+    
+    # Cloudflare
     if result["cloudflare"]:
-        lines.append("☁️ **Cloudflare:** ✅ Detected")
+        lines.append(f"Protection: Cloudflare ✓")
     
+    # Platform
     if result["platform"]:
-        lines.append(f"🛒 **Platform:** {', '.join(result['platform'])}")
-    else:
-        lines.append("🛒 **Platform:** Unknown")
+        lines.append(f"Platform: {', '.join(result['platform'])}")
     
+    # Gateways
     if result["gateways"]:
-        lines.append(f"💳 **Gateways:** {', '.join(result['gateways'])}")
+        lines.append(f"Gateway: {', '.join(result['gateways'])}")
     else:
-        lines.append("💳 **Gateways:** None detected")
+        lines.append("Gateway: Not detected")
     
+    # Captcha
     if result["captcha"]:
-        lines.append(f"🤖 **Captcha:** {', '.join(result['captcha'])}")
+        lines.append(f"Captcha: {', '.join(result['captcha'])}")
     else:
-        lines.append("🤖 **Captcha:** None detected")
+        lines.append("Captcha: None")
     
-    # Checkout page with clickable links
-    if result["checkout_page"]:
-        checkout_links = result.get("checkout_links", [])
-        if checkout_links:
-            links_text = " | ".join([f"[Open]({link})" for link in checkout_links[:2]])
-            lines.append(f"🛒 **Checkout:** ✅ Found → {links_text}")
-        else:
-            lines.append("🛒 **Checkout:** ✅ Found")
+    # Checkout with links
+    checkout_links = result.get("checkout_links", [])
+    if checkout_links:
+        link = checkout_links[0]
+        lines.append(f"Checkout: [Open]({link})")
+    elif result["checkout_page"]:
+        lines.append("Checkout: Found")
     
-    # Payment page with clickable links
-    if result["payment_page"]:
-        payment_links = result.get("payment_links", [])
-        if payment_links:
-            links_text = " | ".join([f"[Open]({link})" for link in payment_links[:2]])
-            lines.append(f"💰 **Payment:** ✅ Found → {links_text}")
-        else:
-            lines.append("💰 **Payment:** ✅ Found")
+    # Payment with links
+    payment_links = result.get("payment_links", [])
+    if payment_links:
+        link = payment_links[0]
+        lines.append(f"Payment: [Open]({link})")
+    elif result["payment_page"]:
+        lines.append("Payment: Found")
     
     return "\n".join(lines)
 
 async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Analyze website(s) for payment gateways, captcha, platform, etc."""
     uid = update.effective_user.id
+    is_user_admin = is_admin(uid)
     
-    if not is_approved(uid, "site"):
+    if not is_user_admin and not is_approved(uid, "site"):
         await update.message.reply_text("⛔ You are not approved to use this command.", reply_to_message_id=update.message.message_id)
         return
     
@@ -1825,79 +1693,92 @@ async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not raw_input:
         await update.message.reply_text(
-            "⚠️ **Usage:** `/site <url>` or `/site <url1> <url2> ...`\n\n"
-            "**Examples:**\n"
+            "**Site Analyzer**\n\n"
+            "Usage: `/site <url>` or `/site <url1> <url2> ...`\n\n"
+            "Example:\n"
             "• `/site example.com`\n"
-            "• `/site https://shop.com https://store.com`\n\n"
-            "**Detects:**\n"
-            "• 💳 Payment Gateways (Stripe, Braintree, PayPal, etc.)\n"
-            "• 🤖 Captcha (reCAPTCHA, hCaptcha, Turnstile, etc.)\n"
-            "• 🛒 Platform (Shopify, WooCommerce, Magento, etc.)\n"
-            "• ☁️ Cloudflare protection\n"
-            "• 🔒 SSL status\n\n"
-            "**Max:** 10 sites at once",
+            "• `/site shop1.com shop2.com`\n\n"
+            "Detects:\n"
+            "• Payment Gateways (Stripe, Braintree, PayPal...)\n"
+            "• Captcha (reCAPTCHA, hCaptcha, Turnstile...)\n"
+            "• Platform (Shopify, WooCommerce, Magento...)\n"
+            "• Cloudflare, SSL, Checkout/Payment pages\n\n"
+            f"Limit: {'Unlimited (Admin)' if is_user_admin else '10 sites'}",
             parse_mode="Markdown",
             reply_to_message_id=update.message.message_id
         )
         return
     
-    # Extract URLs (split by space, comma, or newline)
+    # Extract URLs
     urls = re.split(r'[\s,\n]+', raw_input)
-    urls = [u.strip() for u in urls if u.strip()]
+    urls = [u.strip() for u in urls if u.strip() and '.' in u]
     
-    # Limit to 10 URLs
-    if len(urls) > 10:
+    if not urls:
+        await update.message.reply_text("No valid URLs found.", reply_to_message_id=update.message.message_id)
+        return
+    
+    # Limit for non-admin users
+    max_sites = 999 if is_user_admin else 10
+    if len(urls) > max_sites:
         await update.message.reply_text(
-            f"⚠️ Maximum 10 sites allowed. You provided {len(urls)}.\nOnly first 10 will be checked.",
+            f"Maximum {max_sites} sites allowed. Checking first {max_sites}.",
             reply_to_message_id=update.message.message_id
         )
-        urls = urls[:10]
+        urls = urls[:max_sites]
     
     # Initial message
     msg = await update.message.reply_text(
-        f"🔍 **Analyzing {len(urls)} site(s)...**\n\n⏳ Starting...",
+        f"**Analyzing {len(urls)} site(s)...**\n\nStarting...",
         parse_mode="Markdown",
         reply_to_message_id=update.message.message_id
     )
     
     all_results = []
+    session = requests.Session()  # Reuse session for efficiency
     
-    for i, url in enumerate(urls, 1):
-        # Update progress
+    try:
+        for i, url in enumerate(urls, 1):
+            # Update progress
+            try:
+                await msg.edit_text(
+                    f"**Analyzing {len(urls)} site(s)...**\n\n"
+                    f"Checking [{i}/{len(urls)}]: `{url[:40]}`",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+            
+            # Analyze site with shared session
+            result = _analyze_site(url, session)
+            all_results.append(result)
+            
+            # Small delay between requests
+            if i < len(urls):
+                await asyncio.sleep(0.3)
+    finally:
+        # Clean exit - close session
         try:
-            await msg.edit_text(
-                f"🔍 **Analyzing {len(urls)} site(s)...**\n\n"
-                f"⏳ Checking site {i}/{len(urls)}: `{url[:50]}`...",
-                parse_mode="Markdown"
-            )
-        except Exception:
+            session.close()
+        except:
             pass
-        
-        # Analyze site
-        result = _analyze_site(url)
-        all_results.append(result)
-        
-        # Brief delay between requests
-        if i < len(urls):
-            await asyncio.sleep(0.5)
     
-    # Format final output
-    output_lines = [f"📊 **Site Analysis Results ({len(urls)} site{'s' if len(urls) > 1 else ''})**\n"]
+    # Build output
+    output = [f"**Site Analysis** — {len(urls)} site{'s' if len(urls) > 1 else ''}\n"]
     
     for i, result in enumerate(all_results, 1):
         if len(urls) > 1:
-            output_lines.append(_format_site_result(result, i))
+            output.append(_format_site_result_v2(result, i))
         else:
-            output_lines.append(_format_site_result(result))
-        output_lines.append("")  # Empty line between results
+            output.append(_format_site_result_v2(result))
     
-    final_output = "\n".join(output_lines)
+    output.append(f"{'━'*30}")
+    final_output = "\n".join(output)
     
     # Truncate if too long
     if len(final_output) > 4000:
-        final_output = final_output[:3950] + "\n\n... (truncated)"
+        final_output = final_output[:3900] + "\n\n... (truncated)"
     
-    await msg.edit_text(final_output, parse_mode="Markdown")
+    await msg.edit_text(final_output, parse_mode="Markdown", disable_web_page_preview=True)
 
 # ==== 4.4 Admin Commands: /on and /off ====
 async def on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
