@@ -595,7 +595,7 @@ def get_health_bar(health: int) -> str:
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "filter", "num", "adhar", "site")
+CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "filter", "site")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -640,8 +640,12 @@ def load_users():
         if "approved" in data:
             approved_all.update(data.get("approved", []))
 
+        # Only load known command keys (avoid resurrecting removed commands from old DB files)
         if "cmd_status" in data and isinstance(data.get("cmd_status"), dict):
-            cmd_status.update(data.get("cmd_status", {}))
+            loaded = data.get("cmd_status", {}) or {}
+            for k in CMD_KEYS:
+                if k in loaded:
+                    cmd_status[k] = bool(loaded.get(k))
 
         approved_users.clear()
         approved_users.update(approved_all)
@@ -1317,128 +1321,8 @@ def get_top_countries(by_country, limit=3):
     country_counts.sort(key=lambda x: x[1], reverse=True)
     return country_counts[:limit]
 
-# ==== 4.3 New Commands: /num and /adhar ====
-async def num_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get details by phone number"""
-    uid = update.effective_user.id
-    if not is_approved(uid, "num"):
-        await update.message.reply_text("⛔ You are not approved to use this command.", reply_to_message_id=update.message.message_id)
-        return
-    
-    if not is_cmd_enabled("num"):
-        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
-        return
-    
-    if not context.args:
-        await update.message.reply_text("⚠️ Usage: /num <phone_number>\nExample: /num 9955053727", reply_to_message_id=update.message.message_id)
-        return
-    
-    phone_number = context.args[0].strip()
-    
-    # Clean the phone number (remove +91, spaces, etc.)
-    phone_number = re.sub(r'[^0-9]', '', phone_number)
-    
-    # If starts with country code, remove it
-    if phone_number.startswith('91') and len(phone_number) == 12:
-        phone_number = phone_number[2:]
-    
-    if len(phone_number) != 10 or not phone_number.isdigit():
-        await update.message.reply_text("❌ Invalid phone number. Please provide a valid 10-digit Indian phone number.", reply_to_message_id=update.message.message_id)
-        return
-    
-    try:
-        msg = await update.message.reply_text("🔍 Fetching details...", reply_to_message_id=update.message.message_id)
-        
-        # Updated API endpoint with hidden URL
-        api_url = "https://api.example.com/num"  # Hidden API endpoint
-        params = {"number": phone_number}
-        
-        # Make request with timeout
-        response = requests.get(api_url, params=params, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Format the response
-            formatted = (
-                f"📱 *Phone Number Details*\n\n"
-                f"👤 *Name:* {data.get('name', 'N/A')}\n"
-                f"🆔 *Aadhaar:* {data.get('aadhaar', 'N/A')}\n"
-                f"👨‍👩‍👧 *Father's Name:* {data.get('father_name', 'N/A')}\n"
-                f"📞 *Mobile:* {data.get('mobile', 'N/A')}\n"
-                f"📧 *Email:* {data.get('email', 'N/A')}\n"
-                f"🏠 *Address:* {data.get('address', 'N/A')}"
-            )
-            
-            await msg.edit_text(formatted, parse_mode="Markdown")
-        else:
-            await msg.edit_text("❌ Error fetching details. Please try again later.")
-    
-    except requests.exceptions.Timeout:
-        await update.message.reply_text("⏱️ Request timed out. Please try again.", reply_to_message_id=update.message.message_id)
-    except requests.exceptions.RequestException as e:
-        await update.message.reply_text(f"❌ Error connecting to service: {str(e)[:100]}", reply_to_message_id=update.message.message_id)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)[:100]}", reply_to_message_id=update.message.message_id)
-
-async def adhar_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get details by Aadhaar number"""
-    uid = update.effective_user.id
-    if not is_approved(uid, "adhar"):
-        await update.message.reply_text("⛔ You are not approved to use this command.", reply_to_message_id=update.message.message_id)
-        return
-    
-    if not is_cmd_enabled("adhar"):
-        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
-        return
-    
-    if not context.args:
-        await update.message.reply_text("⚠️ Usage: /adhar <aadhaar_number>\nExample: /adhar 937480711484", reply_to_message_id=update.message.message_id)
-        return
-    
-    aadhaar_number = context.args[0].strip()
-    
-    # Clean the aadhaar number
-    aadhaar_number = re.sub(r'[^0-9]', '', aadhaar_number)
-    
-    if len(aadhaar_number) != 12 or not aadhaar_number.isdigit():
-        await update.message.reply_text("❌ Invalid Aadhaar number. Please provide a valid 12-digit Aadhaar number.", reply_to_message_id=update.message.message_id)
-        return
-    
-    try:
-        msg = await update.message.reply_text("🔍 Fetching details...", reply_to_message_id=update.message.message_id)
-        
-        # Updated API endpoint with hidden URL
-        api_url = "https://api.example.com/aadhar"  # Hidden API endpoint
-        params = {"aadhar": aadhaar_number}
-        
-        # Make request with timeout
-        response = requests.get(api_url, params=params, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Format the response
-            formatted = (
-                f"🆔 *Aadhaar Details*\n\n"
-                f"👤 *Name:* {data.get('name', 'N/A')}\n"
-                f"🆔 *Aadhaar:* {data.get('aadhaar', 'N/A')}\n"
-                f"👨‍👩‍👧 *Father's Name:* {data.get('father_name', 'N/A')}\n"
-                f"📞 *Mobile:* {data.get('mobile', 'N/A')}\n"
-                f"📧 *Email:* {data.get('email', 'N/A')}\n"
-                f"🏠 *Address:* {data.get('address', 'N/A')}"
-            )
-            
-            await msg.edit_text(formatted, parse_mode="Markdown")
-        else:
-            await msg.edit_text("❌ Error fetching details. Please try again later.")
-    
-    except requests.exceptions.Timeout:
-        await update.message.reply_text("⏱️ Request timed out. Please try again.", reply_to_message_id=update.message.message_id)
-    except requests.exceptions.RequestException as e:
-        await update.message.reply_text(f"❌ Error connecting to service: {str(e)[:100]}", reply_to_message_id=update.message.message_id)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)[:100]}", reply_to_message_id=update.message.message_id)
+# ==== 4.3 Removed Commands: /num and /adhar ====
+# These commands were deprecated and fully removed.
 
 # ==== 4.35 /site Command - Website Gateway & Captcha Analyzer ====
 def _analyze_site(url: str, session: requests.Session = None) -> dict:
@@ -1464,18 +1348,15 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
         "error": None,
     }
     
-    # Normalize URL and extract main domain only
-    from urllib.parse import urlparse
-    
+    # Normalize URL (keep path/query; gateway is often only detectable on checkout/payment URLs)
+    url = (url or "").strip()
+    if not url:
+        result["error"] = "Empty URL"
+        return result
+
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    
-    # Extract main domain only (remove paths like /login, /checkout etc)
-    parsed = urlparse(url)
-    main_domain = f"{parsed.scheme}://{parsed.netloc}"
-    
-    # Use main domain for checking
-    url = main_domain
+
     result["url"] = url
     result["ssl"] = url.startswith("https://")
     
@@ -1488,8 +1369,56 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
     # Use provided session or create new one
     http = session or requests.Session()
     
+    def _is_soft_404(text_lower: str) -> bool:
+        if not text_lower:
+            return False
+        # Conservative: only treat explicit 404 pages as missing.
+        if "<title>404" in text_lower:
+            return True
+        if "404" in text_lower and ("page not found" in text_lower or "not found" in text_lower):
+            return True
+        return False
+
+    def _head_allows(url_to_check: str) -> bool | None:
+        """
+        True  => exists (2xx/3xx or 401/403)
+        False => does not exist (404/410 or other hard failure)
+        None  => HEAD not allowed / inconclusive
+        """
+        try:
+            r = http.head(url_to_check, headers=headers, timeout=8, allow_redirects=True)
+            if r.status_code == 405:
+                return None
+            if r.status_code in (404, 410):
+                return False
+            if r.status_code in (401, 403):
+                return True
+            return 200 <= r.status_code < 400
+        except Exception:
+            return None
+
     try:
-        resp = http.get(url, headers=headers, timeout=15, allow_redirects=True)
+        # Try the provided URL first; if https fails, fallback to http.
+        resp = None
+        try:
+            resp = http.get(url, headers=headers, timeout=15, allow_redirects=True)
+        except requests.exceptions.SSLError:
+            if url.startswith("https://"):
+                url = "http://" + url[len("https://") :]
+                result["url"] = url
+                result["ssl"] = False
+                resp = http.get(url, headers=headers, timeout=15, allow_redirects=True)
+            else:
+                raise
+        except requests.exceptions.ConnectionError:
+            if url.startswith("https://"):
+                url = "http://" + url[len("https://") :]
+                result["url"] = url
+                result["ssl"] = False
+                resp = http.get(url, headers=headers, timeout=15, allow_redirects=True)
+            else:
+                raise
+
         result["status_code"] = resp.status_code
         
         # Accept any 2xx or 3xx status
@@ -1498,9 +1427,13 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
         else:
             result["status"] = "partial"
         
-        html = resp.text.lower()
-        original_html = resp.text
+        html = (resp.text or "").lower()
+        original_html = resp.text or ""
         base_url = f"{urlparse(resp.url).scheme}://{urlparse(resp.url).netloc}"
+
+        # Handle "soft 404" pages that respond 200
+        if resp.status_code == 200 and _is_soft_404(html):
+            result["status"] = "partial"
         
         # ============ PAYMENT GATEWAYS ============
         gateway_patterns = {
@@ -1513,6 +1446,12 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
             "Worldpay": ["worldpay.com", "worldpay.js", "worldpayonline"],
             "Klarna": ["klarna.com", "klarnacdn", "klarna-checkout"],
             "Razorpay": ["razorpay.com", "razorpay.js", "checkout.razorpay"],
+            "PayU": ["payu", "payumoney", "secure.payu", "checkout.payu"],
+            "Cashfree": ["cashfree", "cashfreepayments", "api.cashfree", "sdk.cashfree"],
+            "Paytm": ["paytm", "securegw.paytm", "checkout.paytm"],
+            "PhonePe": ["phonepe", "api.phonepe", "checkout.phonepe"],
+            "CCAvenue": ["ccavenue", "secure.ccavenue", "ccavenue.com"],
+            "Instamojo": ["instamojo", "js.instamojo", "api.instamojo"],
             "2Checkout": ["2checkout.com", "2co.com", "2checkout-inline"],
             "Mollie": ["mollie.com", "mollie.js", "molliepayments"],
             "Shopify Pay": ["shop.app", "shopifypay", "checkout.shopify"],
@@ -1521,10 +1460,18 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
             "NMI": ["collectjs", "collect.js"],
             "Checkout.com": ["checkout.com", "cko-", "frames.js"],
         }
-        
-        for gateway, patterns in gateway_patterns.items():
-            if any(p in html for p in patterns):
-                result["gateways"].append(gateway)
+
+        def _detect_gateways(text_lower: str) -> set[str]:
+            found: set[str] = set()
+            if not text_lower:
+                return found
+            for gateway, patterns in gateway_patterns.items():
+                if any(p in text_lower for p in patterns):
+                    found.add(gateway)
+            return found
+
+        gateways_found = _detect_gateways(html)
+        result["gateways"] = sorted(gateways_found)
         
         # ============ CAPTCHA DETECTION ============
         captcha_patterns = {
@@ -1564,73 +1511,150 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
         if "cf-ray" in resp.headers or "cf-cache-status" in resp.headers:
             result["cloudflare"] = True
         
-        # ============ EXTRACT CHECKOUT/PAYMENT LINKS ============
+        # ============ EXTRACT & VERIFY CHECKOUT/PAYMENT LINKS ============
+        # Goal: only return links that "exist" (not 404/410) and use them to improve gateway detection.
+        base_netloc = urlparse(base_url).netloc
+        gateways_set: set[str] = set(result.get("gateways") or [])
+
+        def _is_valid_href(href: str) -> bool:
+            h = (href or "").strip().lower()
+            if not h:
+                return False
+            if any(x in h for x in ["javascript:", "mailto:", "tel:", "void", "#"]):
+                return False
+            if any(h.endswith(ext) for ext in [".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp"]):
+                return False
+            return True
+
+        def _to_full_url(href: str) -> str:
+            if href.startswith("http://") or href.startswith("https://"):
+                return href
+            if href.startswith("//"):
+                return "https:" + href
+            if href.startswith("/"):
+                return base_url + href
+            return urljoin(base_url + "/", href)
+
+        def _is_internal(full_url: str) -> bool:
+            try:
+                return urlparse(full_url).netloc == base_netloc
+            except Exception:
+                return False
+
+        probe_budget = 15
+        probes_used = 0
+
+        def _page_exists_and_scan(full_url: str) -> tuple[bool, str]:
+            """
+            Returns (exists, final_url).
+            Exists means "not 404/410" (so 401/403 still counts as existing).
+            Also opportunistically scans page content for gateway signals.
+            """
+            # Cheap check first if possible
+            head_ok = _head_allows(full_url)
+            if head_ok is False:
+                return False, full_url
+
+            # If we have a positive HEAD signal but we're out of probe budget,
+            # still return the link as "existing" (non-404) without content scanning.
+            nonlocal probes_used
+            if probes_used >= probe_budget:
+                if head_ok is True:
+                    return True, full_url
+                return False, full_url
+
+            try:
+                probes_used += 1
+                r = http.get(full_url, headers=headers, timeout=15, allow_redirects=True)
+                code = r.status_code
+                final = r.url or full_url
+                text_lower = (r.text or "").lower()
+
+                if code in (404, 410):
+                    return False, final
+                if code == 200 and _is_soft_404(text_lower):
+                    return False, final
+
+                # If we can read content, scan it for gateways (checkout/payment pages often include the gateway scripts).
+                gateways_set.update(_detect_gateways(text_lower))
+                return True, final
+            except Exception:
+                # If HEAD was allowed and not false, treat as unknown; don't claim exists.
+                return False, full_url
+
         # Find all href links
-        all_links = re.findall(r'href=["\']([^"\']+)["\']', original_html, re.IGNORECASE)
-        
-        checkout_keywords = ['checkout', '/cart', '/basket', '/order', '/buy', '/purchase']
+        all_links = re.findall(r'href=["\']([^"\']+)["\']', original_html or "", re.IGNORECASE)
+        checkout_keywords = ["checkout", "/cart", "/basket", "/order", "/buy", "/purchase", "place-order", "pay-now"]
         payment_keywords = [
-            'add-payment-method', 'add-payment', 'payment-method', 'payment-methods',
-            'add-card', '/payment', 'my-account/payment', 'account/payment',
-            'edit-payment', 'manage-payment', 'wallet', 'billing-method'
+            "add-payment-method", "add-payment", "payment-method", "payment-methods",
+            "add-card", "/payment", "my-account/payment", "account/payment",
+            "edit-payment", "manage-payment", "wallet", "billing-method", "billing", "card"
         ]
-        
-        for link in all_links:
-            link_lower = link.lower()
-            
-            # Skip invalid links
-            if any(x in link_lower for x in ['javascript:', 'mailto:', 'tel:', '.js', '.css', '.png', '.jpg', '.gif', '.svg', '.ico', '#', 'void']):
+
+        checkout_candidates: list[str] = []
+        payment_candidates: list[str] = []
+
+        for href in all_links:
+            if not _is_valid_href(href):
                 continue
-            
-            # Build full URL
-            if link.startswith('http'):
-                full_url = link
-            elif link.startswith('//'):
-                full_url = 'https:' + link
-            elif link.startswith('/'):
-                full_url = base_url + link
-            else:
-                full_url = urljoin(url, link)
-            
-            # Categorize link - Checkout
-            if any(k in link_lower for k in checkout_keywords):
-                if full_url not in result["checkout_links"] and len(result["checkout_links"]) < 3:
-                    result["checkout_links"].append(full_url)
-                    result["checkout_page"] = True
-            
-            # Categorize link - Payment
-            if any(k in link_lower for k in payment_keywords):
-                if full_url not in result["payment_links"] and len(result["payment_links"]) < 3:
-                    result["payment_links"].append(full_url)
-                    result["payment_page"] = True
-        
-        # ============ TRY COMMON PAYMENT PAGE PATHS ============
-        # If no payment links found, try common paths used by /st and similar
-        if not result["payment_links"]:
-            common_payment_paths = [
-                '/my-account/add-payment-method',
-                '/my-account/payment-methods',
-                '/account/add-payment-method',
-                '/checkout/add-payment',
-                '/my-account/add-card',
-            ]
-            
-            for path in common_payment_paths:
-                try:
-                    test_url = base_url + path
-                    test_resp = http.head(test_url, headers=headers, timeout=5, allow_redirects=True)
-                    if test_resp.status_code in [200, 301, 302]:
-                        result["payment_links"].append(test_url)
-                        result["payment_page"] = True
-                        break
-                except:
+            full = _to_full_url(href.strip())
+            if not _is_internal(full):
+                continue
+            hl = href.lower()
+            if any(k in hl for k in checkout_keywords):
+                checkout_candidates.append(full)
+            if any(k in hl for k in payment_keywords):
+                payment_candidates.append(full)
+
+        # Add common paths as fallbacks (Shopify/WooCommerce patterns)
+        common_checkout_paths = ["/checkout", "/checkout/", "/cart", "/cart/", "/basket", "/basket/"]
+        common_payment_paths = [
+            "/my-account/add-payment-method",
+            "/my-account/add-payment-method/",
+            "/my-account/payment-methods",
+            "/my-account/payment-methods/",
+            "/account/add-payment-method",
+            "/checkout/add-payment",
+            "/my-account/add-card",
+        ]
+
+        for p in common_checkout_paths:
+            checkout_candidates.append(base_url + p)
+        for p in common_payment_paths:
+            payment_candidates.append(base_url + p)
+
+        # De-dupe while keeping order
+        def _dedupe_keep_order(items: list[str]) -> list[str]:
+            out = []
+            seen = set()
+            for it in items:
+                if it in seen:
                     continue
-        
-        # Check content indicators
-        if any(x in html for x in ["checkout", "add to cart", "place order", "proceed to"]):
-            result["checkout_page"] = True
-        if any(x in html for x in ["credit card", "card number", "cvv", "cvc", "payment method", "add payment"]):
-            result["payment_page"] = True
+                seen.add(it)
+                out.append(it)
+            return out
+
+        checkout_candidates = _dedupe_keep_order(checkout_candidates)[:20]
+        payment_candidates = _dedupe_keep_order(payment_candidates)[:20]
+
+        # Verify & collect (only real pages, not 404)
+        for cand in checkout_candidates:
+            if len(result["checkout_links"]) >= 3:
+                break
+            exists, final = _page_exists_and_scan(cand)
+            if exists and final not in result["checkout_links"]:
+                result["checkout_links"].append(final)
+                result["checkout_page"] = True
+
+        for cand in payment_candidates:
+            if len(result["payment_links"]) >= 3:
+                break
+            exists, final = _page_exists_and_scan(cand)
+            if exists and final not in result["payment_links"]:
+                result["payment_links"].append(final)
+                result["payment_page"] = True
+
+        result["gateways"] = sorted(gateways_set)
         
     except requests.exceptions.Timeout:
         result["error"] = "Timeout"
@@ -1699,14 +1723,18 @@ def _format_site_result_v2(result: dict, index: int = None) -> str:
     # Checkout with links
     checkout_links = result.get("checkout_links", [])
     if checkout_links:
-        lines.append(f"Checkout: ✅ [Click to Open]({checkout_links[0]})")
+        lines.append("Checkout: ✅")
+        for u in checkout_links[:3]:
+            lines.append(f"• [Open]({u})")
     elif result["checkout_page"]:
         lines.append("Checkout: ✅ Found")
     
     # Payment with links - IMPORTANT for /st type checks
     payment_links = result.get("payment_links", [])
     if payment_links:
-        lines.append(f"Payment: ✅ [Click to Open]({payment_links[0]})")
+        lines.append("Payment: ✅")
+        for u in payment_links[:3]:
+            lines.append(f"• [Open]({u})")
     elif result["payment_page"]:
         lines.append("Payment: ✅ Found")
     
@@ -1809,12 +1837,32 @@ async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     output.append(f"{'━'*30}")
     final_output = "\n".join(output)
-    
-    # Truncate if too long
-    if len(final_output) > 4000:
-        final_output = final_output[:3900] + "\n\n... (truncated)"
-    
-    await msg.edit_text(final_output, parse_mode="Markdown", disable_web_page_preview=True)
+
+    # If too long, send in multiple messages (no truncation).
+    max_len = 3800  # keep margin for Markdown/Telegram limits
+    chunks = []
+    cur_lines = []
+    cur_len = 0
+    for line in final_output.splitlines():
+        add_len = len(line) + (1 if cur_lines else 0)
+        if cur_lines and (cur_len + add_len) > max_len:
+            chunks.append("\n".join(cur_lines))
+            cur_lines = [line]
+            cur_len = len(line)
+        else:
+            cur_lines.append(line)
+            cur_len += add_len
+    if cur_lines:
+        chunks.append("\n".join(cur_lines))
+
+    await msg.edit_text(chunks[0], parse_mode="Markdown", disable_web_page_preview=True)
+    for extra in chunks[1:]:
+        await update.message.reply_text(
+            extra,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_to_message_id=update.message.message_id,
+        )
 
 # ==== 4.4 Admin Commands: /on and /off ====
 async def on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2108,8 +2156,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /sort <data|file> - Clean & sort cards\n"
         "• /bin <bins/cards> - BIN lookup\n\n"
         "🔍 *Details Fetching:*\n"
-        "• /num <phone> - Get details by phone number\n"
-        "• /adhar <aadhaar> - Get details by Aadhaar\n"
         "• /site <url> - Analyze website gateway/captcha\n\n"
         "🧰 *Basic Commands:*\n"
         "• /start - Welcome message\n"
@@ -2415,8 +2461,6 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Details Fetching Tools
     parts.append("🔍 *Details Fetching Tools*\n" + "\n".join([
-        lock("/num <number> — Get details by phone number", "num"),
-        lock("/adhar <aadhaar> — Get details by Aadhaar number", "adhar"),
         lock("/site <url> — Analyze website gateway/captcha", "site"),
     ]))
 
@@ -7001,8 +7045,6 @@ async def main():
         app.add_handler(CommandHandler("filter", filter_cmd))
 
         # New commands
-        app.add_handler(CommandHandler("num", num_cmd))
-        app.add_handler(CommandHandler("adhar", adhar_cmd))
         app.add_handler(CommandHandler("site", site_cmd))
 
         # Callback handlers - FIXED PATTERNS with shorter prefixes
