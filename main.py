@@ -20,7 +20,7 @@ from multiprocessing import Process
 from io import BytesIO, StringIO
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
-from telegram.error import NetworkError, RetryAfter, TimedOut
+from telegram.error import Conflict, NetworkError, RetryAfter, TimedOut
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import threading
@@ -7042,6 +7042,8 @@ async def main():
     load_bin_databases()
 
     # If polling crashes (network hiccups, Telegram issues, etc.), restart without recursion.
+    # Special case: Conflict means *another replica is polling*; in that case we back off quietly.
+    conflict_backoff = 30  # seconds, grows up to 15 minutes
     while True:
         # Railway Pro optimizations: Better concurrency and timeout settings
         app = (
@@ -7115,6 +7117,18 @@ async def main():
             await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
             return
         except Exception as e:
+            if isinstance(e, Conflict):
+                # Another instance is already running long-polling.
+                # Stay alive (health server still works) but stop spamming restarts.
+                wait_s = int(min(900, max(30, conflict_backoff + random.randint(0, 15))))
+                print(
+                    "⚠️ Polling conflict detected (another bot instance is running). "
+                    f"Backing off for {wait_s}s to avoid getUpdates conflict spam."
+                )
+                await asyncio.sleep(wait_s)
+                conflict_backoff = min(900, int(conflict_backoff * 1.8) + 5)
+                continue
+
             print(f"❌ Bot polling error: {e}")
             await asyncio.sleep(5)
             print("🔄 Restarting bot polling...")
