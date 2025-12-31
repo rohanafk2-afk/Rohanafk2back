@@ -30,8 +30,7 @@ ENV DISPLAY=:99
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir pyrogram pyaes pysocks
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy your bot code (assuming main.py as entry point)
 COPY . /app

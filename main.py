@@ -36,95 +36,8 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from fake_useragent import UserAgent
 
-# ==== 1.1 Pyrogram Client for Large File Downloads (OPTIONAL) ====
-# Pyrogram uses MTProto protocol - NO file size limits (supports 2GB+)
-# To enable: pip install pyrogram and set TELEGRAM_API_ID + TELEGRAM_API_HASH
-_pyrogram_client = None
-_pyrogram_lock = threading.Lock()
-_pyrogram_available = False
-
-# Check if pyrogram is installed
-try:
-    from pyrogram import Client as PyrogramClient
-    _pyrogram_available = True
-    print("✅ Pyrogram available - Large file support can be enabled")
-except ImportError:
-    _pyrogram_available = False
-    print("ℹ️ Pyrogram not installed - Using standard 20MB file limit")
-
-# Get API credentials from environment (required for Pyrogram)
-TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID") or os.environ.get("API_ID") or ""
-TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH") or os.environ.get("API_HASH") or ""
-
-async def get_pyrogram_client():
-    """Get or create Pyrogram client for large file downloads"""
-    global _pyrogram_client
-    
-    if not _pyrogram_available:
-        return None
-    
-    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
-        return None
-    
-    if _pyrogram_client is None:
-        with _pyrogram_lock:
-            if _pyrogram_client is None:
-                try:
-                    _pyrogram_client = PyrogramClient(
-                        "bot_session",
-                        api_id=int(TELEGRAM_API_ID),
-                        api_hash=TELEGRAM_API_HASH,
-                        bot_token=os.environ.get("BOT_TOKEN", ""),
-                        in_memory=True
-                    )
-                    await _pyrogram_client.start()
-                    print("✅ Pyrogram client started - Large file support enabled!")
-                except Exception as e:
-                    print(f"⚠️ Pyrogram init failed: {e}")
-                    _pyrogram_client = None
-    
-    return _pyrogram_client
-
-async def download_large_file(message, file_id: str) -> str:
-    """
-    Download files of ANY size using Pyrogram (MTProto).
-    Returns None if Pyrogram not available.
-    """
-    if not _pyrogram_available:
-        return None
-        
-    try:
-        pyro_client = await get_pyrogram_client()
-        
-        if pyro_client and pyro_client.is_connected:
-            temp_path = tempfile.mktemp(suffix=".txt")
-            
-            try:
-                await pyro_client.download_media(
-                    message.reply_to_message.document.file_id,
-                    file_name=temp_path
-                )
-                
-                with open(temp_path, 'rb') as f:
-                    content = f.read()
-                
-                for encoding in ['utf-8', 'latin-1', 'cp1252']:
-                    try:
-                        return content.decode(encoding)
-                    except:
-                        continue
-                return content.decode('utf-8', errors='ignore')
-            finally:
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
-        else:
-            return None
-            
-    except Exception as e:
-        print(f"Pyrogram download error: {e}")
-        return None
+# NOTE: Pyrogram/TgCrypto support was removed to avoid runtime warnings and
+# keep dependencies minimal. File downloads use the standard Bot API.
 
 # ==== 1.2 Performance & Connection Pooling ====
 # Global session with connection pooling for faster HTTP requests
@@ -1773,9 +1686,10 @@ async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Extract URLs
+    # Extract URLs (dedupe while preserving order)
     urls = re.split(r'[\s,\n]+', raw_input)
     urls = [u.strip() for u in urls if u.strip() and '.' in u]
+    urls = list(dict.fromkeys(urls))
     
     if not urls:
         await update.message.reply_text("No valid URLs found.", reply_to_message_id=update.message.message_id)
@@ -1798,33 +1712,32 @@ async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     all_results = []
-    session = requests.Session()  # Reuse session for efficiency
-    
-    try:
-        for i, url in enumerate(urls, 1):
-            # Update progress
+
+    # Run blocking HTTP analysis in background threads so multiple users can run /site concurrently.
+    loop = asyncio.get_running_loop()
+    last_progress_at = 0.0
+
+    for i, url in enumerate(urls, 1):
+        now = time.time()
+        # Throttle edits to avoid Telegram rate limits
+        if now - last_progress_at >= 0.8 or i == 1:
+            last_progress_at = now
             try:
                 await msg.edit_text(
                     f"**Analyzing {len(urls)} site(s)...**\n\n"
                     f"Checking [{i}/{len(urls)}]: `{url[:40]}`",
-                    parse_mode="Markdown"
+                    parse_mode="Markdown",
                 )
-            except:
+            except Exception:
                 pass
-            
-            # Analyze site with shared session
-            result = _analyze_site(url, session)
-            all_results.append(result)
-            
-            # Small delay between requests
-            if i < len(urls):
-                await asyncio.sleep(0.3)
-    finally:
-        # Clean exit - close session
-        try:
-            session.close()
-        except:
-            pass
+
+        # Run analysis off the event loop (requests is blocking)
+        result = await loop.run_in_executor(_executor, _analyze_site, url, None)
+        all_results.append(result)
+
+        # Small delay between sites (keeps targets happy without slowing the bot too much)
+        if i < len(urls):
+            await asyncio.sleep(0.08)
     
     # Build output
     output = [f"**Site Analysis** — {len(urls)} site{'s' if len(urls) > 1 else ''}\n"]
@@ -2520,7 +2433,7 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         replied_msg = update.message.reply_to_message
         data_text = ""
         
-        # Check for document attachment - supports large files via Pyrogram
+        # Check for document attachment
         if replied_msg.document:
             file_size = replied_msg.document.file_size
             file_size_mb = file_size / (1024 * 1024)
@@ -2530,23 +2443,17 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_to_message_id=update.message.message_id
             )
             try:
-                # Try Pyrogram for large files (no size limit)
+                # Telegram Bot API has practical file download limits; fail fast on very large files.
                 if file_size > 20 * 1024 * 1024:
-                    data_text = await download_large_file(update.message, replied_msg.document.file_id)
-                    if data_text is None:
-                        await processing_msg.edit_text(
-                            "⚠️ *Large file support not configured*\n\n"
-                            f"Your file: {file_size_mb:.1f}MB (limit: 20MB)\n\n"
-                            "To enable large file support, set env vars:\n"
-                            "• `TELEGRAM_API_ID`\n"
-                            "• `TELEGRAM_API_HASH`\n\n"
-                            "Get from: https://my.telegram.org",
-                            parse_mode="Markdown"
-                        )
-                        return
-                else:
-                    file = await context.bot.get_file(replied_msg.document.file_id)
-                    data_text = await download_file_content(file)
+                    await processing_msg.edit_text(
+                        f"⚠️ File too large: {file_size_mb:.1f}MB\n\n"
+                        "Please upload a smaller file (≤ 20MB) or split it.",
+                        reply_to_message_id=update.message.message_id,
+                    )
+                    return
+
+                file = await context.bot.get_file(replied_msg.document.file_id)
+                data_text = await download_file_content(file)
                 
                 if not data_text or not data_text.strip():
                     await processing_msg.edit_text("❌ File is empty or could not be read.")
@@ -2557,9 +2464,8 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
                     await processing_msg.edit_text(
-                        "⚠️ Set `TELEGRAM_API_ID` & `TELEGRAM_API_HASH` for large files\n"
-                        "Get from: https://my.telegram.org",
-                        parse_mode="Markdown"
+                        "⚠️ File too large to download via Bot API.\n\n"
+                        "Please upload a smaller file (≤ 20MB) or split it."
                     )
                 else:
                     await processing_msg.edit_text(f"❌ Error: {error_msg[:100]}")
@@ -5593,7 +5499,7 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         replied_msg = update.message.reply_to_message
         data_text = ""
         
-        # Check for document attachment - supports large files via Pyrogram
+        # Check for document attachment
         if replied_msg.document:
             file_size = replied_msg.document.file_size
             file_size_mb = file_size / (1024 * 1024)
@@ -5603,23 +5509,15 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_to_message_id=update.message.message_id
             )
             try:
-                # Try Pyrogram for large files
                 if file_size > 20 * 1024 * 1024:
-                    data_text = await download_large_file(update.message, replied_msg.document.file_id)
-                    if data_text is None:
-                        await processing_msg.edit_text(
-                            "⚠️ *Large file support not configured*\n\n"
-                            f"Your file: {file_size_mb:.1f}MB (limit: 20MB)\n\n"
-                            "To enable, set env vars:\n"
-                            "• `TELEGRAM_API_ID`\n"
-                            "• `TELEGRAM_API_HASH`\n\n"
-                            "Get from: https://my.telegram.org",
-                            parse_mode="Markdown"
-                        )
-                        return
-                else:
-                    file = await context.bot.get_file(replied_msg.document.file_id)
-                    data_text = await download_file_content(file)
+                    await processing_msg.edit_text(
+                        f"⚠️ File too large: {file_size_mb:.1f}MB\n\n"
+                        "Please upload a smaller file (≤ 20MB) or split it."
+                    )
+                    return
+
+                file = await context.bot.get_file(replied_msg.document.file_id)
+                data_text = await download_file_content(file)
                 
                 if not data_text or not data_text.strip():
                     await processing_msg.edit_text("❌ File is empty or could not be read.")
@@ -5630,8 +5528,8 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
                     await processing_msg.edit_text(
-                        "⚠️ Set `TELEGRAM_API_ID` & `TELEGRAM_API_HASH` for large files",
-                        parse_mode="Markdown"
+                        "⚠️ File too large to download via Bot API.\n\n"
+                        "Please upload a smaller file (≤ 20MB) or split it."
                     )
                 else:
                     await processing_msg.edit_text(f"❌ Error: {error_msg[:100]}")
@@ -6197,7 +6095,7 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
         replied = update.message.reply_to_message
         
-        # Check for file - supports large files via Pyrogram
+        # Check for file
         if replied.document:
             file_size = replied.document.file_size
             file_size_mb = file_size / (1024 * 1024)
@@ -6207,28 +6105,24 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_to_message_id=update.message.message_id
             )
             try:
-                # Try Pyrogram for large files
                 if file_size > 20 * 1024 * 1024:
-                    data_text = await download_large_file(update.message, replied.document.file_id)
-                    if data_text is None:
-                        await msg.edit_text(
-                            "⚠️ *Large file support not configured*\n\n"
-                            f"Your file: {file_size_mb:.1f}MB\n\n"
-                            "Set env vars for large files:\n"
-                            "• `TELEGRAM_API_ID`\n"
-                            "• `TELEGRAM_API_HASH`",
-                            parse_mode="Markdown"
-                        )
-                        return
-                else:
-                    file = await context.bot.get_file(replied.document.file_id)
-                    file_bytes = await file.download_as_bytearray()
-                    data_text = file_bytes.decode('utf-8', errors='ignore')
+                    await msg.edit_text(
+                        f"⚠️ File too large: {file_size_mb:.1f}MB\n\n"
+                        "Please upload a smaller file (≤ 20MB) or split it."
+                    )
+                    return
+
+                file = await context.bot.get_file(replied.document.file_id)
+                file_bytes = await file.download_as_bytearray()
+                data_text = file_bytes.decode('utf-8', errors='ignore')
                 await msg.edit_text(f"🔍 Processing {file_size_mb:.1f}MB...")
             except Exception as e:
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
-                    await msg.edit_text("⚠️ Set `TELEGRAM_API_ID` & `TELEGRAM_API_HASH` for large files", parse_mode="Markdown")
+                    await msg.edit_text(
+                        "⚠️ File too large to download via Bot API.\n\n"
+                        "Please upload a smaller file (≤ 20MB) or split it."
+                    )
                 else:
                     await msg.edit_text(f"❌ Error: {error_msg[:50]}")
                 return
