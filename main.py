@@ -14,6 +14,7 @@ import shutil
 import gc
 import zipfile
 import sys
+import collections
 from datetime import datetime
 from multiprocessing import Process
 from io import BytesIO, StringIO
@@ -61,6 +62,69 @@ async def _tg_call_with_retry(fn, *args, retries: int = 4, base_delay: float = 1
             raise
     if last_exc:
         raise last_exc
+
+
+# ==== 1.1 Lightweight in-process log capture (for /log) ====
+# Captures stdout/stderr into a ring buffer so the admin can fetch recent logs.
+_LOG_MAX_LINES = int(os.environ.get("LOG_MAX_LINES", "20000"))
+_log_lines = collections.deque(maxlen=max(1000, _LOG_MAX_LINES))
+_log_lock = threading.Lock()
+
+
+def _append_log_line(line: str) -> None:
+    # Prefix timestamp for readability
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    clean = line.rstrip("\n")
+    if not clean:
+        return
+    with _log_lock:
+        _log_lines.append(f"{ts}Z {clean}\n")
+
+
+class _TeeStream:
+    def __init__(self, original, stream_name: str):
+        self._original = original
+        self._name = stream_name
+        self._buf = ""
+
+    def write(self, s):  # noqa: A003
+        try:
+            self._original.write(s)
+        except Exception:
+            pass
+        try:
+            txt = str(s)
+        except Exception:
+            txt = ""
+        self._buf += txt
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            _append_log_line(f"[{self._name}] {line}")
+        return len(txt)
+
+    def flush(self):  # noqa: A003
+        try:
+            self._original.flush()
+        except Exception:
+            pass
+        if self._buf.strip():
+            _append_log_line(f"[{self._name}] {self._buf}")
+        self._buf = ""
+
+
+def _init_log_capture() -> None:
+    if os.environ.get("DISABLE_LOG_CAPTURE", "").strip().lower() in ("1", "true", "yes"):
+        return
+    try:
+        if not isinstance(sys.stdout, _TeeStream):
+            sys.stdout = _TeeStream(sys.stdout, "stdout")
+        if not isinstance(sys.stderr, _TeeStream):
+            sys.stderr = _TeeStream(sys.stderr, "stderr")
+    except Exception:
+        pass
+
+
+_init_log_capture()
 
 # ==== 1.2 Performance & Connection Pooling ====
 # Global session with connection pooling for faster HTTP requests
@@ -2072,6 +2136,49 @@ async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
+
+async def log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send recent container/runtime logs to admin as a text file."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin only command.", reply_to_message_id=update.message.message_id)
+        return
+
+    # Optional: /log 5000 -> last 5000 lines
+    lines_req = None
+    if context.args:
+        try:
+            lines_req = int(context.args[0])
+        except Exception:
+            lines_req = None
+
+    with _log_lock:
+        data = list(_log_lines)
+
+    if lines_req and lines_req > 0:
+        data = data[-min(lines_req, len(data)) :]
+
+    content = "".join(data)
+    if not content.strip():
+        content = "No logs captured yet.\n"
+
+    # Cap payload to avoid huge Telegram uploads (keep last ~3MB)
+    b = content.encode("utf-8", errors="ignore")
+    max_bytes = 3 * 1024 * 1024
+    if len(b) > max_bytes:
+        b = b[-max_bytes:]
+
+    bio = BytesIO(b)
+    bio.name = f"container_logs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}Z.txt"
+
+    await _tg_call_with_retry(
+        context.bot.send_document,
+        chat_id=update.effective_chat.id,
+        document=bio,
+        filename=bio.name,
+        caption=f"✅ Logs ({len(b) / 1024:.1f} KB)",
+        reply_to_message_id=update.message.message_id,
+    )
+
 # ==== 4.5 Basic Bot Commands ====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Welcome! Use /cmds to see available commands.", reply_to_message_id=update.message.message_id)
@@ -2426,6 +2533,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/ram — Show RAM/CPU/Disk details",
             "/cleanram [kill] — Best-effort memory cleanup",
             "/backup — Zip & send .py/.json files",
+            "/log [lines] — Send recent container logs",
             f"\n✅ Approved (global): {len(approved_all)}",
         ]))
 
@@ -6983,6 +7091,7 @@ async def main():
         app.add_handler(CommandHandler("ram", ram_cmd))
         app.add_handler(CommandHandler("cleanram", cleanram_cmd))
         app.add_handler(CommandHandler("backup", backup_cmd))
+        app.add_handler(CommandHandler("log", log_cmd))
 
         # Auth commands
         app.add_handler(CommandHandler("kill", kill_cmd))
