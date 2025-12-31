@@ -15,6 +15,7 @@ import gc
 import zipfile
 import sys
 import collections
+import logging
 from typing import List, Optional, Set, Tuple, Union
 from datetime import datetime
 from multiprocessing import Process
@@ -38,6 +39,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from fake_useragent import UserAgent
+
+# Keep library logs quiet (Railway/container)
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # NOTE: Pyrogram/TgCrypto support was removed to avoid runtime warnings and
 # keep dependencies minimal. File downloads use the standard Bot API.
@@ -153,7 +160,8 @@ def get_http_session():
     return _http_session
 
 # Thread pool for parallel operations
-_executor = ThreadPoolExecutor(max_workers=10)
+_executor = ThreadPoolExecutor(max_workers=int(os.environ.get("WORKER_THREADS", "5")))
+SITE_THREADS = int(os.environ.get("SITE_THREADS", "5"))
 
 # ==== 2. Global Configs ====
 CHROME_PATH = "/usr/bin/google-chrome"
@@ -1800,34 +1808,47 @@ async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=update.message.message_id
     )
     
-    all_results = []
+    all_results: List[Optional[dict]] = [None] * len(urls)
 
-    # Run blocking HTTP analysis in background threads so multiple users can run /site concurrently.
+    # Run blocking HTTP analysis in background threads.
+    # Concurrency is capped so one user can't overwhelm the box.
     loop = asyncio.get_running_loop()
+    sem = asyncio.Semaphore(max(1, SITE_THREADS))
+
+    started = 0
+    completed = 0
     last_progress_at = 0.0
 
-    for i, url in enumerate(urls, 1):
-        now = time.time()
-        # Throttle edits to avoid Telegram rate limits
-        if now - last_progress_at >= 0.8 or i == 1:
-            last_progress_at = now
-            try:
-                await _tg_call_with_retry(
-                    msg.edit_text,
-                    f"**Analyzing {len(urls)} site(s)...**\n\n"
-                    f"Checking [{i}/{len(urls)}]: `{url[:40]}`",
-                    parse_mode="Markdown",
-                )
-            except Exception:
-                pass
+    async def _one(idx: int, u: str) -> None:
+        nonlocal completed, started, last_progress_at
+        async with sem:
+            started += 1
+            now = time.time()
+            if now - last_progress_at >= 0.8:
+                last_progress_at = now
+                try:
+                    await _tg_call_with_retry(
+                        msg.edit_text,
+                        f"**Analyzing {len(urls)} site(s)...**\n\n"
+                        f"Progress: `{completed}/{len(urls)}` | Active: `{started - completed}`\n"
+                        f"Now: `{u[:40]}`",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
 
-        # Run analysis off the event loop (requests is blocking)
-        result = await loop.run_in_executor(_executor, _analyze_site, url, None)
-        all_results.append(result)
+            # Run analysis off the event loop (requests is blocking)
+            res = await loop.run_in_executor(_executor, _analyze_site, u, None)
+            all_results[idx] = res
+            completed += 1
 
-        # Small delay between sites (keeps targets happy without slowing the bot too much)
-        if i < len(urls):
-            await asyncio.sleep(0.08)
+    tasks = [asyncio.create_task(_one(i, u)) for i, u in enumerate(urls)]
+    await asyncio.gather(*tasks)
+
+    # Fill any missing entries defensively
+    for i in range(len(all_results)):
+        if all_results[i] is None:
+            all_results[i] = {"url": urls[i], "status": "error", "error": "Unknown", "status_code": None, "ssl": False, "platform": [], "gateways": [], "captcha": [], "cloudflare": False, "checkout_page": False, "payment_page": False, "checkout_links": [], "payment_links": []}
     
     # Build output
     output = [f"**Site Analysis** — {len(urls)} site{'s' if len(urls) > 1 else ''}\n"]
@@ -2322,6 +2343,14 @@ async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ This command is for admins only.", reply_to_message_id=update.message.message_id)
         return
     
+    # Quick Telegram API connectivity check
+    api_ok = False
+    try:
+        await _tg_call_with_retry(context.bot.get_me)
+        api_ok = True
+    except Exception:
+        api_ok = False
+
     # Get system stats
     try:
         mem = psutil.virtual_memory()
@@ -2337,6 +2366,9 @@ async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Build health display
     lines = ["🏥 *Browser Commands Health*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
+    lines.append(f"🤖 *Bot API:* {'✅ OK' if api_ok else '❌ Unreachable'}")
+    lines.append(f"🧵 *Worker Threads:* `{int(os.environ.get('WORKER_THREADS', '5'))}` | 🌐 */site Threads:* `{SITE_THREADS}`")
+    lines.append("")
     
     overall_health = 0
     active_cmds = 0
@@ -2411,7 +2443,8 @@ async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
     
-    await update.message.reply_text(
+    await _tg_call_with_retry(
+        update.message.reply_text,
         "\n".join(lines),
         parse_mode="Markdown",
         reply_to_message_id=update.message.message_id
@@ -7042,7 +7075,17 @@ async def main():
     # Load BIN databases once at startup
     load_bin_databases()
 
+    async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Prevent PTB from printing "No error handlers are registered" with full trace spam.
+        try:
+            err = getattr(context, "error", None)
+            msg = str(err) if err else "unknown"
+            print(f"⚠️ Handler error: {msg[:200]}")
+        except Exception:
+            pass
+
     # If polling crashes (network hiccups, Telegram issues, etc.), restart without recursion.
+    net_backoff = 5.0
     while True:
         # Railway Pro optimizations: Better concurrency and timeout settings
         app = (
@@ -7094,6 +7137,9 @@ async def main():
         app.add_handler(CommandHandler("backup", backup_cmd))
         app.add_handler(CommandHandler("log", log_cmd))
 
+        # Register error handler to reduce noisy stack traces in logs
+        app.add_error_handler(_error_handler)
+
         # Auth commands
         app.add_handler(CommandHandler("kill", kill_cmd))
         app.add_handler(CommandHandler("kd", kd_cmd))
@@ -7116,6 +7162,15 @@ async def main():
             await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
             return
         except Exception as e:
+            # Network errors to Telegram happen in containers; back off a bit.
+            if isinstance(e, (NetworkError, TimedOut)):
+                wait_s = min(120.0, net_backoff + random.random() * 2.0)
+                print(f"⚠️ Bot polling network error: {str(e)[:120]} (sleep {wait_s:.1f}s)")
+                await asyncio.sleep(wait_s)
+                net_backoff = min(120.0, net_backoff * 1.6 + 1.0)
+                continue
+
+            net_backoff = 5.0
             print(f"❌ Bot polling error: {e}")
             await asyncio.sleep(5)
             print("🔄 Restarting bot polling...")
