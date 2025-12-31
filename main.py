@@ -15,6 +15,7 @@ import gc
 import zipfile
 import sys
 import collections
+from typing import List, Optional, Set, Tuple, Union
 from datetime import datetime
 from multiprocessing import Process
 from io import BytesIO, StringIO
@@ -47,7 +48,7 @@ async def _tg_call_with_retry(fn, *args, retries: int = 4, base_delay: float = 1
     Best-effort retry wrapper for Telegram API calls.
     Helps with transient `telegram.error.TimedOut` and network hiccups.
     """
-    last_exc: Exception | None = None
+    last_exc: Optional[Exception] = None
     for attempt in range(retries):
         try:
             return await fn(*args, **kwargs)
@@ -1379,7 +1380,7 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
             return True
         return False
 
-    def _head_allows(url_to_check: str) -> bool | None:
+    def _head_allows(url_to_check: str) -> Optional[bool]:
         """
         True  => exists (2xx/3xx or 401/403)
         False => does not exist (404/410 or other hard failure)
@@ -1461,8 +1462,8 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
             "Checkout.com": ["checkout.com", "cko-", "frames.js"],
         }
 
-        def _detect_gateways(text_lower: str) -> set[str]:
-            found: set[str] = set()
+        def _detect_gateways(text_lower: str) -> Set[str]:
+            found: Set[str] = set()
             if not text_lower:
                 return found
             for gateway, patterns in gateway_patterns.items():
@@ -1514,7 +1515,7 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
         # ============ EXTRACT & VERIFY CHECKOUT/PAYMENT LINKS ============
         # Goal: only return links that "exist" (not 404/410) and use them to improve gateway detection.
         base_netloc = urlparse(base_url).netloc
-        gateways_set: set[str] = set(result.get("gateways") or [])
+        gateways_set: Set[str] = set(result.get("gateways") or [])
 
         def _is_valid_href(href: str) -> bool:
             h = (href or "").strip().lower()
@@ -1544,7 +1545,7 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
         probe_budget = 15
         probes_used = 0
 
-        def _page_exists_and_scan(full_url: str) -> tuple[bool, str]:
+        def _page_exists_and_scan(full_url: str) -> Tuple[bool, str]:
             """
             Returns (exists, final_url).
             Exists means "not 404/410" (so 401/403 still counts as existing).
@@ -1591,8 +1592,8 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
             "edit-payment", "manage-payment", "wallet", "billing-method", "billing", "card"
         ]
 
-        checkout_candidates: list[str] = []
-        payment_candidates: list[str] = []
+        checkout_candidates: List[str] = []
+        payment_candidates: List[str] = []
 
         for href in all_links:
             if not _is_valid_href(href):
@@ -1624,7 +1625,7 @@ def _analyze_site(url: str, session: requests.Session = None) -> dict:
             payment_candidates.append(base_url + p)
 
         # De-dupe while keeping order
-        def _dedupe_keep_order(items: list[str]) -> list[str]:
+        def _dedupe_keep_order(items: List[str]) -> List[str]:
             out = []
             seen = set()
             for it in items:
@@ -1912,7 +1913,7 @@ async def off_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==== 4.4.1 Admin Utilities: /ram, /cleanram, /backup ====
-def _fmt_bytes(n: float | int) -> str:
+def _fmt_bytes(n: Union[float, int]) -> str:
     try:
         n = float(n)
     except Exception:
@@ -2471,7 +2472,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     isadm = is_admin(uid)
 
-    def lock(line: str, cmd_key: str | None) -> str:
+    def lock(line: str, cmd_key: Optional[str]) -> str:
         if cmd_key is None:
             return line  # public tool
         
@@ -5899,7 +5900,7 @@ async def sort_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_sort_results_file(user_id, unique_id, context, query.message, query.message.chat.id)
 
 # ==== 13. Updated Admin Commands (per-command approve) ====
-def _normalize_cmd_arg(arg: str) -> str | None:
+def _normalize_cmd_arg(arg: str) -> Optional[str]:
     a = (arg or "").lower().strip()
     if a in ("all", *CMD_KEYS):
         return a
