@@ -2335,119 +2335,238 @@ async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show health status of all browser commands with auto-repair info (Admin only)"""
+    """
+    Admin-only real-time health check.
+
+    Includes:
+    - Telegram API reachability (real-time)
+    - DNS reachability (real-time)
+    - Chrome/Chromedriver presence + version (real-time)
+    - Selenium smoke test (real-time, cached briefly unless forced)
+    - Historical command health stats (based on success/failure counters)
+    """
     uid = update.effective_user.id
     
     # Admin only
     if not is_admin(uid):
         await update.message.reply_text("⛔ This command is for admins only.", reply_to_message_id=update.message.message_id)
         return
-    
-    # Quick Telegram API connectivity check
+
+    # Args
+    arg0 = (context.args[0].lower().strip() if context.args else "")
+    force = arg0 in ("force", "deep", "test")
+
+    # Reset mode (historical counters only)
+    if arg0 == "reset":
+        if len(context.args) > 1:
+            cmd_to_reset = context.args[1].lower().strip()
+            if cmd_to_reset in BROWSER_CMDS:
+                reset_cmd_health(cmd_to_reset)
+                await _tg_call_with_retry(
+                    update.message.reply_text,
+                    f"✅ Health stats reset for `/{cmd_to_reset}`",
+                    parse_mode="Markdown",
+                    reply_to_message_id=update.message.message_id,
+                )
+                return
+        reset_cmd_health()
+        await _tg_call_with_retry(
+            update.message.reply_text,
+            "✅ All health stats have been reset!",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
+    status_msg = await _tg_call_with_retry(
+        update.message.reply_text,
+        "⏳ Running health checks...",
+        reply_to_message_id=update.message.message_id,
+    )
+
+    loop = asyncio.get_running_loop()
+
+    # --- Real-time checks ---
+    # 1) Telegram API
     api_ok = False
+    api_ms = None
+    api_err = None
+    t0 = time.perf_counter()
     try:
         await _tg_call_with_retry(context.bot.get_me)
         api_ok = True
-    except Exception:
+        api_ms = int((time.perf_counter() - t0) * 1000)
+    except Exception as e:
         api_ok = False
+        api_err = str(e)[:120]
 
-    # Get system stats
+    # 2) DNS resolution
+    def _dns_check() -> Tuple[bool, str]:
+        try:
+            import socket
+            ip = socket.gethostbyname("api.telegram.org")
+            return True, ip
+        except Exception as e:
+            return False, str(e)[:120]
+
+    dns_ok, dns_info = await loop.run_in_executor(_executor, _dns_check)
+
+    # 3) System stats (real time)
     try:
         mem = psutil.virtual_memory()
         cpu = psutil.cpu_percent(interval=0.1)
         mem_used = mem.percent
-    except:
-        mem_used = 0
-        cpu = 0
-    
-    # Get all command health
+    except Exception:
+        mem_used = 0.0
+        cpu = 0.0
+
+    # 4) Chrome/Driver presence + version
+    def _bin_exists(p: str) -> bool:
+        try:
+            return os.path.exists(p)
+        except Exception:
+            return False
+
+    chrome_ok = _bin_exists(CHROME_PATH)
+    driver_ok = _bin_exists(CHROME_DRIVER_PATH)
+
+    def _version_cmd(cmd: List[str]) -> str:
+        try:
+            import subprocess
+            out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=6)
+            return (out.decode("utf-8", errors="ignore").strip() or "unknown")[:120]
+        except Exception as e:
+            return f"error: {str(e)[:90]}"
+
+    chrome_ver = await loop.run_in_executor(_executor, _version_cmd, [CHROME_PATH, "--version"]) if chrome_ok else "missing"
+    driver_ver = await loop.run_in_executor(_executor, _version_cmd, [CHROME_DRIVER_PATH, "--version"]) if driver_ok else "missing"
+
+    # 5) Selenium smoke test (cached unless forced)
+    # Cache globals (module-level) for last selenium test
+    global _last_selenium_health  # type: ignore[name-defined]
+    try:
+        _last_selenium_health
+    except Exception:
+        _last_selenium_health = {"ts": 0.0, "ok": False, "ms": None, "err": "not run"}
+
+    def _selenium_smoke() -> dict:
+        import time as _t
+        t_start = _t.time()
+        acquired = False
+        try:
+            acquired = _browser_semaphore.acquire(timeout=2)
+            if not acquired:
+                return {"ok": False, "ms": int((_t.time() - t_start) * 1000), "err": "All browser slots busy"}
+
+            # Minimal fast options (avoid fake_useragent network)
+            opts = webdriver.ChromeOptions()
+            opts.binary_location = CHROME_PATH
+            opts.add_argument("--headless=new")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--disable-gpu")
+            opts.add_argument("--disable-extensions")
+            opts.add_argument("--disable-features=site-per-process,TranslateUI")
+            opts.add_argument("--blink-settings=imagesEnabled=false")
+            opts.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36")
+
+            svc = Service(executable_path=CHROME_DRIVER_PATH)
+            drv = webdriver.Chrome(service=svc, options=opts)
+            try:
+                drv.set_page_load_timeout(10)
+                drv.get("https://example.com")
+                _ = drv.title
+            finally:
+                try:
+                    drv.quit()
+                except Exception:
+                    pass
+
+            return {"ok": True, "ms": int((_t.time() - t_start) * 1000), "err": None}
+        except Exception as e:
+            return {"ok": False, "ms": int((_t.time() - t_start) * 1000), "err": str(e)[:160]}
+        finally:
+            if acquired:
+                try:
+                    _browser_semaphore.release()
+                except Exception:
+                    pass
+
+    now_ts = time.time()
+    should_run = force or (now_ts - float(_last_selenium_health.get("ts", 0.0)) > 120.0)
+    if should_run and chrome_ok and driver_ok:
+        sel = await loop.run_in_executor(_executor, _selenium_smoke)
+        _last_selenium_health = {"ts": now_ts, **sel}
+
+    sel_ok = bool(_last_selenium_health.get("ok"))
+    sel_ms = _last_selenium_health.get("ms")
+    sel_err = _last_selenium_health.get("err")
+    sel_age = int(now_ts - float(_last_selenium_health.get("ts", now_ts)))
+
+    # --- Historical command health (usage stats) ---
     health_data = get_all_health()
     uptime = format_timedelta(datetime.now() - start_time)
-    
-    # Build health display
-    lines = ["🏥 *Browser Commands Health*", "━━━━━━━━━━━━━━━━━━━━━━", ""]
-    lines.append(f"🤖 *Bot API:* {'✅ OK' if api_ok else '❌ Unreachable'}")
-    lines.append(f"🧵 *Worker Threads:* `{int(os.environ.get('WORKER_THREADS', '5'))}` | 🌐 */site Threads:* `{SITE_THREADS}`")
-    lines.append("")
-    
+
+    # Browser slots real-time
+    try:
+        slots_free = int(getattr(_browser_semaphore, "_value", -1))
+    except Exception:
+        slots_free = -1
+
+    lines = [
+        "🏥 *Health (Real-time)*",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"🤖 *Bot API:* {'✅ OK' if api_ok else '❌ FAIL'}" + (f" (`{api_ms}ms`)" if api_ms is not None else ""),
+        f"🌐 *DNS:* {'✅ OK' if dns_ok else '❌ FAIL'} (`{dns_info}`)",
+        f"🧠 *CPU:* `{cpu:.1f}%` | 💾 *RAM:* `{mem_used:.1f}%` | ⏱ *Uptime:* `{uptime}`",
+        f"🧵 *Threads:* workers `{int(os.environ.get('WORKER_THREADS', '5'))}` | /site `{SITE_THREADS}` | browsers `{MAX_CONCURRENT_BROWSERS}` (free: `{slots_free}`)",
+        "",
+        "🧩 *Chrome:* " + ("✅" if chrome_ok else "❌") + f" `{chrome_ver}`",
+        "🧩 *ChromeDriver:* " + ("✅" if driver_ok else "❌") + f" `{driver_ver}`",
+        "🧪 *Selenium smoke:* "
+        + ("✅" if sel_ok else "❌")
+        + (f" (`{sel_ms}ms`)" if sel_ms is not None else "")
+        + (f" | age `{sel_age}s`" if not force else " | forced"),
+    ]
+    if (not sel_ok) and sel_err:
+        lines.append(f"   ⚠️ `{sel_err}`")
+    if api_err and not api_ok:
+        lines.append(f"   ⚠️ `{api_err}`")
+
+    lines += [
+        "",
+        "📈 *Command Health (Usage Stats)*",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
     overall_health = 0
     active_cmds = 0
     repairs_needed = []
-    
     for cmd in BROWSER_CMDS:
         data = health_data[cmd]
         health = data["health"]
         bar = get_health_bar(health)
-        
-        # Track overall health
         if data["total"] > 0:
             overall_health += health
             active_cmds += 1
-        
-        # Check if repair needed
         if health < 30 and data["total"] > 0:
             repairs_needed.append(cmd)
-        
-        # Status indicator
-        if data["last_status"] == "success":
-            status = "✅"
-        elif data["last_status"] == "failure":
-            status = "❌"
-        else:
-            status = "⚪"
-        
-        # Format line
-        lines.append(f"`/{cmd}` {bar}")
-        lines.append(f"   {status} {data['success']}✓ / {data['failure']}✗ ({data['total']} total)")
-    
-    # Calculate overall health
+        last = data.get("last_time") or "N/A"
+        lines.append(f"`/{cmd}` {bar}  (`{data['success']}✓/{data['failure']}✗`, last: `{last}`)")
+
     avg_health = overall_health // active_cmds if active_cmds > 0 else 100
-    
     lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"📊 *Overall Health:* {get_health_bar(avg_health)}")
-    lines.append(f"⏱ *Uptime:* `{uptime}`")
-    lines.append(f"💾 *Memory:* `{mem_used:.1f}%` | 🖥 *CPU:* `{cpu:.1f}%`")
-    
-    # Auto-repair status
+    lines.append(f"📊 *Overall (usage):* {get_health_bar(avg_health)}")
     if repairs_needed:
-        lines.append("")
-        lines.append(f"⚕️ *Auto-Repair Active:* `/{', /'.join(repairs_needed)}`")
-        lines.append("_Failure history reduced to allow recovery_")
-    
-    # Admin reset option
-    if is_admin(uid):
-        lines.append("")
-        lines.append("🔧 *Admin:* `/health reset` to clear all stats")
-        lines.append("🔧 *Admin:* `/health reset <cmd>` to clear specific cmd")
-    
-    # Check for reset command
-    if context.args and is_admin(uid):
-        arg = context.args[0].lower()
-        if arg == "reset":
-            if len(context.args) > 1:
-                cmd_to_reset = context.args[1].lower()
-                if cmd_to_reset in BROWSER_CMDS:
-                    reset_cmd_health(cmd_to_reset)
-                    await update.message.reply_text(
-                        f"✅ Health stats reset for `/{cmd_to_reset}`",
-                        parse_mode="Markdown",
-                        reply_to_message_id=update.message.message_id
-                    )
-                    return
-            else:
-                reset_cmd_health()
-                await update.message.reply_text(
-                    "✅ All health stats have been reset!",
-                    reply_to_message_id=update.message.message_id
-                )
-                return
-    
+        lines.append(f"⚕️ *Auto-repair flagged:* `/{', /'.join(repairs_needed)}`")
+
+    lines.append("")
+    lines.append("🔧 *Admin:* `/health reset` | `/health deep` (force selenium)")
+
     await _tg_call_with_retry(
-        update.message.reply_text,
+        status_msg.edit_text,
         "\n".join(lines),
         parse_mode="Markdown",
-        reply_to_message_id=update.message.message_id
+        disable_web_page_preview=True,
     )
 
 async def bin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
