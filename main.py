@@ -19,6 +19,7 @@ from multiprocessing import Process
 from io import BytesIO, StringIO
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.error import NetworkError, RetryAfter, TimedOut
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import threading
@@ -38,6 +39,28 @@ from fake_useragent import UserAgent
 
 # NOTE: Pyrogram/TgCrypto support was removed to avoid runtime warnings and
 # keep dependencies minimal. File downloads use the standard Bot API.
+
+
+async def _tg_call_with_retry(fn, *args, retries: int = 4, base_delay: float = 1.0, **kwargs):
+    """
+    Best-effort retry wrapper for Telegram API calls.
+    Helps with transient `telegram.error.TimedOut` and network hiccups.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return await fn(*args, **kwargs)
+        except RetryAfter as e:
+            last_exc = e
+            await asyncio.sleep(float(getattr(e, "retry_after", 1.0)) + 0.5)
+        except (TimedOut, NetworkError) as e:
+            last_exc = e
+            await asyncio.sleep(base_delay * (2**attempt))
+        except Exception as e:
+            # Don't hide unexpected exceptions
+            raise
+    if last_exc:
+        raise last_exc
 
 # ==== 1.2 Performance & Connection Pooling ====
 # Global session with connection pooling for faster HTTP requests
@@ -1705,7 +1728,8 @@ async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         urls = urls[:max_sites]
     
     # Initial message
-    msg = await update.message.reply_text(
+    msg = await _tg_call_with_retry(
+        update.message.reply_text,
         f"**Analyzing {len(urls)} site(s)...**\n\nStarting...",
         parse_mode="Markdown",
         reply_to_message_id=update.message.message_id
@@ -1723,7 +1747,8 @@ async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if now - last_progress_at >= 0.8 or i == 1:
             last_progress_at = now
             try:
-                await msg.edit_text(
+                await _tg_call_with_retry(
+                    msg.edit_text,
                     f"**Analyzing {len(urls)} site(s)...**\n\n"
                     f"Checking [{i}/{len(urls)}]: `{url[:40]}`",
                     parse_mode="Markdown",
@@ -1768,9 +1793,10 @@ async def site_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cur_lines:
         chunks.append("\n".join(cur_lines))
 
-    await msg.edit_text(chunks[0], parse_mode="Markdown", disable_web_page_preview=True)
+    await _tg_call_with_retry(msg.edit_text, chunks[0], parse_mode="Markdown", disable_web_page_preview=True)
     for extra in chunks[1:]:
-        await update.message.reply_text(
+        await _tg_call_with_retry(
+            update.message.reply_text,
             extra,
             parse_mode="Markdown",
             disable_web_page_preview=True,
