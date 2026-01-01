@@ -163,6 +163,23 @@ def get_http_session():
 _executor = ThreadPoolExecutor(max_workers=int(os.environ.get("WORKER_THREADS", "5")))
 SITE_THREADS = int(os.environ.get("SITE_THREADS", "5"))
 
+# BIN prefetch: warm up API/file cache in the main process while Selenium runs in child processes.
+_bin_prefetch_sem = asyncio.Semaphore(int(os.environ.get("BIN_PREFETCH_CONCURRENCY", "10")))
+
+
+async def _prefetch_bin_async(bin6: str) -> None:
+    """Best-effort BIN prefetch to populate local cache (DB3) for child processes."""
+    try:
+        b = (bin6 or "").strip()[:6]
+        if len(b) != 6 or not b.isdigit():
+            return
+        async with _bin_prefetch_sem:
+            loop = asyncio.get_running_loop()
+            # get_bin_info persists API results into DB3 cache; children can then read quickly.
+            await loop.run_in_executor(_executor, get_bin_info, b)
+    except Exception:
+        return
+
 # ==== 2. Global Configs ====
 CHROME_PATH = "/usr/bin/google-chrome"
 CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
@@ -2201,6 +2218,78 @@ async def log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=update.message.message_id,
     )
 
+
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only broadcast message to all known users (approved + per-cmd)."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin only command.", reply_to_message_id=update.message.message_id)
+        return
+
+    text = " ".join(context.args).strip() if context.args else ""
+    if not text and update.message.reply_to_message:
+        text = (update.message.reply_to_message.text or "").strip()
+
+    if not text:
+        await update.message.reply_text(
+            "📣 Usage: `/broadcast <message>`\nOr reply to a message with `/broadcast`",
+            parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
+    # Build recipient list
+    recipients = set()
+    try:
+        recipients.update(approved_all)
+    except Exception:
+        pass
+    try:
+        for s in approved_cmds.values():
+            recipients.update(s)
+    except Exception:
+        pass
+    try:
+        recipients.add(BOT_ADMIN_ID)
+    except Exception:
+        pass
+    try:
+        recipients.difference_update(banned_users)
+    except Exception:
+        pass
+
+    recipients = {int(x) for x in recipients if str(x).isdigit()}
+    if not recipients:
+        await update.message.reply_text("No recipients found.", reply_to_message_id=update.message.message_id)
+        return
+
+    status = await update.message.reply_text(
+        f"📣 Broadcasting to {len(recipients)} users...",
+        reply_to_message_id=update.message.message_id,
+    )
+
+    sent = 0
+    failed = 0
+    sem = asyncio.Semaphore(15)
+
+    async def _send_one(uid: int) -> None:
+        nonlocal sent, failed
+        async with sem:
+            try:
+                await _tg_call_with_retry(
+                    context.bot.send_message,
+                    chat_id=uid,
+                    text=text,
+                    disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+
+    tasks = [asyncio.create_task(_send_one(uid)) for uid in sorted(recipients)]
+    await asyncio.gather(*tasks)
+
+    await status.edit_text(f"✅ Broadcast done.\n\nSent: {sent}\nFailed: {failed}")
+
 # ==== 4.5 Basic Bot Commands ====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Welcome! Use /cmds to see available commands.", reply_to_message_id=update.message.message_id)
@@ -2687,6 +2776,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/cleanram [kill] — Best-effort memory cleanup",
             "/backup — Zip & send .py/.json files",
             "/log [lines] — Send recent container logs",
+            "/broadcast <msg> — Broadcast message to users",
             f"\n✅ Approved (global): {len(approved_all)}",
         ]))
 
@@ -4270,6 +4360,15 @@ async def kill_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Card input not found.\nUse: `/kill 1234123412341234|12|2026|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         return
 
+    # Prefetch BIN in background (warms cache for the Selenium child process)
+    try:
+        cc0 = extract_card_input(card_input) or card_input
+        b6 = re.sub(r"[^0-9]", "", cc0)[:6]
+        if b6:
+            asyncio.create_task(_prefetch_bin_async(b6))
+    except Exception:
+        pass
+
     msg = await update.message.reply_text("⏳ Killing automation...", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
     update_dict = {
         "user_id": uid,
@@ -4404,6 +4503,14 @@ async def kd_cmd(update, context):
         await update.message.reply_text("❌ Invalid card.\nUse: `/kd 4111111111111111|12|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         return
 
+    # Prefetch BIN in background (warms cache for the Selenium child process)
+    try:
+        b6 = re.sub(r"[^0-9]", "", card_input)[:6]
+        if b6:
+            asyncio.create_task(_prefetch_bin_async(b6))
+    except Exception:
+        pass
+
     msg = await update.message.reply_text(f"💳 `{card_input}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
     update_dict = {
         "user_id": uid,
@@ -4537,6 +4644,14 @@ async def ko_cmd(update, context):
         await update.message.reply_text("❌ Invalid card.\nUse: `/ko 4111111111111111|12|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         return
 
+    # Prefetch BIN in background (warms cache for the Selenium child process)
+    try:
+        b6 = re.sub(r"[^0-9]", "", card_input)[:6]
+        if b6:
+            asyncio.create_task(_prefetch_bin_async(b6))
+    except Exception:
+        pass
+
     msg = await update.message.reply_text(f"💳 `{card_input}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
     update_dict = {
         "user_id": uid,
@@ -4667,6 +4782,14 @@ async def zz_cmd(update, context):
     if not card_input:
         await update.message.reply_text("❌ Invalid card.\nUse: `/zz 4111111111111111|12|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         return
+
+    # Prefetch BIN in background (warms cache for the Selenium child process)
+    try:
+        b6 = re.sub(r"[^0-9]", "", card_input)[:6]
+        if b6:
+            asyncio.create_task(_prefetch_bin_async(b6))
+    except Exception:
+        pass
 
     msg = await update.message.reply_text("⚙️ Processing your request...", reply_to_message_id=update.message.message_id)
     update_dict = {
@@ -4805,6 +4928,14 @@ async def dd_cmd(update, context):
     if not card_input:
         await update.message.reply_text("❌ Invalid card.\nUse: `/dd 4111111111111111|12|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         return
+
+    # Prefetch BIN in background (warms cache for the Selenium child process)
+    try:
+        b6 = re.sub(r"[^0-9]", "", card_input)[:6]
+        if b6:
+            asyncio.create_task(_prefetch_bin_async(b6))
+    except Exception:
+        pass
 
     msg = await update.message.reply_text("⚡ Processing (ultra-fast)...", reply_to_message_id=update.message.message_id)
     update_dict = {
@@ -5176,6 +5307,10 @@ async def st_single_main(card_input, update_dict):
             text="❌ Invalid format.\nUse: `/st 4111111111111111|08|25|123`",
             parse_mode="Markdown"
         )
+        try:
+            record_cmd_failure("st")
+        except Exception:
+            pass
         return
 
     card, mm, yy, cvv = parsed
@@ -5273,6 +5408,10 @@ async def st_single_main(card_input, update_dict):
                     f"🧑‍💻 **Checked by:** **{username}** [`{uid}`]"
                 )
                 await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=result_msg, parse_mode="Markdown")
+                try:
+                    record_cmd_success("st")
+                except Exception:
+                    pass
                 return
 
             except Exception as e:
@@ -5298,6 +5437,10 @@ async def st_single_main(card_input, update_dict):
                             text=f"ST Error:\n```\n{traceback.format_exc()[:3500]}\n```",
                             parse_mode="Markdown",
                         )
+                    except Exception:
+                        pass
+                    try:
+                        record_cmd_failure("st")
                     except Exception:
                         pass
                     return
@@ -5338,6 +5481,15 @@ async def st_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     card_input = cards[0]
+
+    # Prefetch BIN in background (warms cache for the Selenium child process)
+    try:
+        b6 = re.sub(r"[^0-9]", "", card_input)[:6]
+        if b6:
+            asyncio.create_task(_prefetch_bin_async(b6))
+    except Exception:
+        pass
+
     msg = await update.message.reply_text(f"💳 `{card_input}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
 
     update_dict = {
@@ -5555,6 +5707,10 @@ async def _bt_check(card_str, chat_id, message_id):
                 f"⏱ Took: {took}s"
             )
             await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=msg, parse_mode="Markdown")
+            try:
+                record_cmd_success("bt")
+            except Exception:
+                pass
 
             # Send BT account used to admin
             try:
@@ -5592,6 +5748,10 @@ async def _bt_check(card_str, chat_id, message_id):
                 trace = traceback.format_exc()
                 await fail_user()
                 await fail_admin(trace, email, password)  # Also sends email:pass on fail
+                try:
+                    record_cmd_failure("bt")
+                except Exception:
+                    pass
             try:
                 if driver:
                     driver.quit()
@@ -5625,6 +5785,14 @@ async def bt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     for card_str in cards:
+        # Prefetch BIN in background (warms cache for the Selenium child process)
+        try:
+            b6 = re.sub(r"[^0-9]", "", card_str)[:6]
+            if b6:
+                asyncio.create_task(_prefetch_bin_async(b6))
+        except Exception:
+            pass
+
         msg = await update.message.reply_text(f"💳 `{card_str}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         Process(target=run_bt_check, args=(card_str, update.effective_chat.id, msg.message_id), daemon=True).start()
 
@@ -5665,8 +5833,21 @@ async def chk_cmd(update, context):
         )
         return
 
+    # Prefetch BIN (even though /chk is stubbed, keep cache warm)
+    try:
+        b6 = re.sub(r"[^0-9]", "", card_input)[:6]
+        if b6:
+            asyncio.create_task(_prefetch_bin_async(b6))
+    except Exception:
+        pass
+
     # Simple response indicating under development
     msg = await update.message.reply_text(f"💳 `{card_input}`\n🔒 *Braintree Auth V2* - Currently under development\n\n⚠️ This feature is being optimized for better performance and reliability. Check back soon!", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+    # Count as "success" since the command responds (stub)
+    try:
+        record_cmd_success("chk")
+    except Exception:
+        pass
 
 # ==== 12. /sort COMMAND (Fixed Card Sorting & Cleaning) ====
 def extract_and_clean_cards_sort(data_text):
@@ -7255,6 +7436,7 @@ async def main():
         app.add_handler(CommandHandler("cleanram", cleanram_cmd))
         app.add_handler(CommandHandler("backup", backup_cmd))
         app.add_handler(CommandHandler("log", log_cmd))
+        app.add_handler(CommandHandler("broadcast", broadcast_cmd))
 
         # Register error handler to reduce noisy stack traces in logs
         app.add_error_handler(_error_handler)
