@@ -49,8 +49,8 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # ==== 1.05 Pyrogram for Large File Uploads (500MB+) ====
 # Pyrogram uses MTProto API which supports up to 2GB file uploads
 # To enable: set API_ID and API_HASH from https://my.telegram.org
-_pyrogram_client = None
 _pyrogram_available = False
+_pyrogram_lock = threading.Lock()
 
 try:
     from pyrogram import Client as PyroClient
@@ -59,14 +59,11 @@ try:
 except ImportError:
     _pyrogram_available = False
     PyroClient = None
+    FloodWait = Exception  # Dummy for except clause
 
-def _get_pyrogram_client():
-    """Get or create Pyrogram client for large file uploads"""
-    global _pyrogram_client
-    
-    if not _pyrogram_available:
-        return None
-    
+
+def _get_pyrogram_config():
+    """Get Pyrogram configuration from environment"""
     api_id = os.environ.get("API_ID", "").strip()
     api_hash = os.environ.get("API_HASH", "").strip()
     bot_token = os.environ.get("BOT_TOKEN", "").strip()
@@ -74,67 +71,90 @@ def _get_pyrogram_client():
     if not api_id or not api_hash or not bot_token:
         return None
     
-    if _pyrogram_client is None:
-        try:
-            _pyrogram_client = PyroClient(
-                "jork_uploader",
-                api_id=int(api_id),
-                api_hash=api_hash,
-                bot_token=bot_token,
-                workdir="/tmp",
-                no_updates=True,  # We don't need updates, just uploading
-                in_memory=True
-            )
-        except Exception as e:
-            print(f"⚠️ Failed to create Pyrogram client: {e}")
-            return None
-    
-    return _pyrogram_client
+    try:
+        return {
+            "api_id": int(api_id),
+            "api_hash": api_hash,
+            "bot_token": bot_token
+        }
+    except ValueError:
+        print(f"⚠️ Invalid API_ID: {api_id}")
+        return None
+
 
 async def _upload_large_file_pyrogram(chat_id: int, file_path: str, caption: str, reply_to: int = None) -> bool:
     """
-    Upload large file using Pyrogram (supports up to 2GB).
+    Upload large video file using Pyrogram (supports up to 2GB).
+    Creates a fresh client for each upload to avoid connection issues.
     Returns True if successful, False otherwise.
     """
-    client = _get_pyrogram_client()
-    if not client:
+    if not _pyrogram_available:
+        print("⚠️ Pyrogram not available")
         return False
     
+    config = _get_pyrogram_config()
+    if not config:
+        print("⚠️ Pyrogram config missing (API_ID, API_HASH, BOT_TOKEN)")
+        return False
+    
+    client = None
     try:
-        # Start client if not running
-        if not client.is_connected:
-            await client.start()
+        # Create a fresh client for this upload
+        client = PyroClient(
+            name=f"upload_{int(time.time())}",
+            api_id=config["api_id"],
+            api_hash=config["api_hash"],
+            bot_token=config["bot_token"],
+            workdir="/tmp",
+            no_updates=True,
+            in_memory=True
+        )
         
-        # Upload as video
+        print(f"📤 Starting Pyrogram client for upload...")
+        await client.start()
+        print(f"✅ Pyrogram client started, uploading {file_path}...")
+        
+        # Upload as video with streaming support
         await client.send_video(
             chat_id=chat_id,
             video=file_path,
             caption=caption,
-            parse_mode="html",
+            parse_mode=None,  # Use plain text to avoid parse errors
             reply_to_message_id=reply_to,
-            supports_streaming=True,
-            progress=None  # Could add progress callback
+            supports_streaming=True
         )
+        print(f"✅ Pyrogram upload successful!")
         return True
         
     except FloodWait as e:
-        # Telegram rate limit - wait and retry
+        print(f"⚠️ FloodWait: waiting {e.value}s...")
         await asyncio.sleep(e.value + 1)
         try:
-            await client.send_video(
-                chat_id=chat_id,
-                video=file_path,
-                caption=caption,
-                parse_mode="html",
-                reply_to_message_id=reply_to,
-                supports_streaming=True
-            )
-            return True
-        except:
-            return False
-    except Exception as e:
-        print(f"Pyrogram upload error: {e}")
+            if client and client.is_connected:
+                await client.send_video(
+                    chat_id=chat_id,
+                    video=file_path,
+                    caption=caption,
+                    parse_mode=None,
+                    reply_to_message_id=reply_to,
+                    supports_streaming=True
+                )
+                return True
+        except Exception as retry_e:
+            print(f"❌ Pyrogram retry failed: {retry_e}")
         return False
+    except Exception as e:
+        print(f"❌ Pyrogram upload error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        if client:
+            try:
+                await client.stop()
+                print("🔌 Pyrogram client stopped")
+            except:
+                pass
 
 
 async def _upload_large_document_pyrogram(chat_id: int, file_path: str, filename: str, caption: str, reply_to: int = None) -> bool:
@@ -143,14 +163,31 @@ async def _upload_large_document_pyrogram(chat_id: int, file_path: str, filename
     Used for large text files from sort/clean/filter commands.
     Returns True if successful, False otherwise.
     """
-    client = _get_pyrogram_client()
-    if not client:
+    if not _pyrogram_available:
+        print("⚠️ Pyrogram not available for document upload")
         return False
     
+    config = _get_pyrogram_config()
+    if not config:
+        print("⚠️ Pyrogram config missing for document upload")
+        return False
+    
+    client = None
     try:
-        # Start client if not running
-        if not client.is_connected:
-            await client.start()
+        # Create a fresh client for this upload
+        client = PyroClient(
+            name=f"doc_upload_{int(time.time())}",
+            api_id=config["api_id"],
+            api_hash=config["api_hash"],
+            bot_token=config["bot_token"],
+            workdir="/tmp",
+            no_updates=True,
+            in_memory=True
+        )
+        
+        print(f"📤 Starting Pyrogram client for document upload...")
+        await client.start()
+        print(f"✅ Pyrogram client started, uploading document...")
         
         # Upload as document
         await client.send_document(
@@ -158,30 +195,41 @@ async def _upload_large_document_pyrogram(chat_id: int, file_path: str, filename
             document=file_path,
             caption=caption,
             file_name=filename,
-            parse_mode="html",
-            reply_to_message_id=reply_to,
-            progress=None
+            parse_mode=None,
+            reply_to_message_id=reply_to
         )
+        print(f"✅ Pyrogram document upload successful!")
         return True
         
     except FloodWait as e:
-        # Telegram rate limit - wait and retry
+        print(f"⚠️ FloodWait: waiting {e.value}s...")
         await asyncio.sleep(e.value + 1)
         try:
-            await client.send_document(
-                chat_id=chat_id,
-                document=file_path,
-                caption=caption,
-                file_name=filename,
-                parse_mode="html",
-                reply_to_message_id=reply_to
-            )
-            return True
-        except:
-            return False
-    except Exception as e:
-        print(f"Pyrogram document upload error: {e}")
+            if client and client.is_connected:
+                await client.send_document(
+                    chat_id=chat_id,
+                    document=file_path,
+                    caption=caption,
+                    file_name=filename,
+                    parse_mode=None,
+                    reply_to_message_id=reply_to
+                )
+                return True
+        except Exception as retry_e:
+            print(f"❌ Pyrogram document retry failed: {retry_e}")
         return False
+    except Exception as e:
+        print(f"❌ Pyrogram document upload error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        if client:
+            try:
+                await client.stop()
+                print("🔌 Pyrogram client stopped")
+            except:
+                pass
 
 
 async def send_large_document(bot, chat_id: int, content: bytes, filename: str, caption: str, reply_to: int = None) -> bool:
