@@ -116,14 +116,12 @@ async def _upload_large_file_pyrogram(chat_id: int, file_path: str, caption: str
         await client.start()
         print(f"✅ Pyrogram client started, uploading {file_path}...")
         
-        # Strip HTML tags from caption for plain text (more reliable)
-        plain_caption = re.sub(r'<[^>]+>', '', caption)
-        
-        # Upload as video with streaming support
+        # Upload as video with streaming support - use HTML parse mode
         await client.send_video(
             chat_id=chat_id,
             video=file_path,
-            caption=plain_caption,
+            caption=caption,
+            parse_mode=PyroEnums.ParseMode.HTML,
             reply_to_message_id=reply_to,
             supports_streaming=True
         )
@@ -135,11 +133,11 @@ async def _upload_large_file_pyrogram(chat_id: int, file_path: str, caption: str
         await asyncio.sleep(e.value + 1)
         try:
             if client and client.is_connected:
-                plain_caption = re.sub(r'<[^>]+>', '', caption)
                 await client.send_video(
                     chat_id=chat_id,
                     video=file_path,
-                    caption=plain_caption,
+                    caption=caption,
+                    parse_mode=PyroEnums.ParseMode.HTML,
                     reply_to_message_id=reply_to,
                     supports_streaming=True
                 )
@@ -193,14 +191,11 @@ async def _upload_large_document_pyrogram(chat_id: int, file_path: str, filename
         await client.start()
         print(f"✅ Pyrogram client started, uploading document...")
         
-        # Strip HTML tags from caption for plain text (more reliable)
-        plain_caption = re.sub(r'<[^>]+>', '', caption) if caption else ""
-        
         # Upload as document
         await client.send_document(
             chat_id=chat_id,
             document=file_path,
-            caption=plain_caption,
+            caption=caption or "",
             file_name=filename,
             reply_to_message_id=reply_to
         )
@@ -212,11 +207,10 @@ async def _upload_large_document_pyrogram(chat_id: int, file_path: str, filename
         await asyncio.sleep(e.value + 1)
         try:
             if client and client.is_connected:
-                plain_caption = re.sub(r'<[^>]+>', '', caption) if caption else ""
                 await client.send_document(
                     chat_id=chat_id,
                     document=file_path,
-                    caption=plain_caption,
+                    caption=caption or "",
                     file_name=filename,
                     reply_to_message_id=reply_to
                 )
