@@ -7787,8 +7787,9 @@ async def split_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 _JORK_BASE_URL = "https://www.xoffline.com"
 _JORK_API_URL = f"{_JORK_BASE_URL}/callDownloaderApi"
 _JORK_API_TOKEN = "3c409435f781890e402cdf7312aa47f2a7e23594f5615ce524f8e711bc69acc5"
+_JORK_MAX_VIDEO_SIZE = 50 * 1024 * 1024  # 50MB Telegram limit for bots
 
-def _fetch_video_download(video_url: str) -> dict:
+def _fetch_video_info(video_url: str) -> dict:
     """
     Fetch video download info from xoffline.com API.
     Returns dict with title, thumbnail, quality, url.
@@ -7854,14 +7855,56 @@ def _fetch_video_download(video_url: str) -> dict:
             "quality": video_data.get("quality", "Unknown"),
             "url": final_url,
         }
-    except KeyError as e:
-        raise RuntimeError(f"Invalid API response format")
+    except KeyError:
+        raise RuntimeError("Invalid API response format")
     except Exception as e:
         raise RuntimeError(f"Failed to parse response: {str(e)[:50]}")
 
+def _download_video_file(download_url: str, max_size: int = _JORK_MAX_VIDEO_SIZE) -> tuple:
+    """
+    Download video file from URL.
+    Returns: (video_bytes, file_size, error_msg)
+    """
+    try:
+        session = get_http_session()
+        
+        # First check file size with HEAD request
+        try:
+            head = session.head(download_url, timeout=10, allow_redirects=True)
+            content_length = int(head.headers.get('content-length', 0))
+            if content_length > max_size:
+                return None, content_length, f"Video too large ({content_length // (1024*1024)}MB). Max: {max_size // (1024*1024)}MB"
+        except:
+            content_length = 0  # Unknown size, proceed anyway
+        
+        # Download the video
+        response = session.get(download_url, stream=True, timeout=120)
+        response.raise_for_status()
+        
+        chunks = []
+        downloaded = 0
+        
+        for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
+            if chunk:
+                chunks.append(chunk)
+                downloaded += len(chunk)
+                
+                if downloaded > max_size:
+                    return None, downloaded, f"Video too large (>{max_size // (1024*1024)}MB)"
+        
+        video_bytes = b''.join(chunks)
+        return video_bytes, len(video_bytes), None
+        
+    except requests.exceptions.Timeout:
+        return None, 0, "Download timed out"
+    except requests.exceptions.HTTPError as e:
+        return None, 0, f"HTTP error: {e.response.status_code}"
+    except Exception as e:
+        return None, 0, f"Download failed: {str(e)[:50]}"
+
 async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /jork <video_url> - Fetch video download link
+    /jork <video_url> - Download video and send to user
     Works with various video platforms.
     """
     uid = update.effective_user.id
@@ -7875,7 +7918,8 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<code>/jork &lt;video_url&gt;</code>\n\n"
             "<b>Example:</b>\n"
             "<code>/jork https://example.com/video</code>\n\n"
-            "Send a video URL and get the direct download link!",
+            "Send a video URL and I'll download & send the video!\n\n"
+            "<i>Max video size: 50MB</i>",
             parse_mode="HTML",
             reply_to_message_id=update.message.message_id
         )
@@ -7898,68 +7942,146 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     try:
-        # Run the blocking request in executor to avoid blocking the event loop
+        # Step 1: Fetch video info
         loop = asyncio.get_running_loop()
-        info = await loop.run_in_executor(_executor, _fetch_video_download, video_url)
+        info = await loop.run_in_executor(_executor, _fetch_video_info, video_url)
         
-        # Build caption
         title = info.get("title", "Unknown")
         quality = info.get("quality", "Unknown")
         download_url = info.get("url", "")
         thumbnail = info.get("thumbnail", "")
         
-        # Escape HTML special chars in title
-        title_safe = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        if not download_url:
+            await wait_msg.edit_text("❌ Failed to get download URL.")
+            return
         
-        caption = (
-            f"<b>{title_safe}</b>\n\n"
-            f"🎞 Quality: <b>{quality}</b>\n\n"
-            f"⬇️ <a href='{download_url}'>Download MP4</a>"
+        # Step 2: Update status and download the video
+        await wait_msg.edit_text(
+            f"📥 Downloading video...\n\n"
+            f"<b>{title[:50]}{'...' if len(title) > 50 else ''}</b>\n"
+            f"🎞 Quality: {quality}",
+            parse_mode="HTML"
         )
         
-        # Delete the waiting message
+        video_bytes, file_size, error = await loop.run_in_executor(
+            _executor, _download_video_file, download_url
+        )
+        
+        if error:
+            # Video too large or download failed - send link instead
+            title_safe = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            
+            fallback_caption = (
+                f"<b>{title_safe}</b>\n\n"
+                f"🎞 Quality: <b>{quality}</b>\n\n"
+                f"⚠️ {error}\n\n"
+                f"⬇️ <a href='{download_url}'>Download MP4 manually</a>"
+            )
+            
+            try:
+                await wait_msg.delete()
+            except:
+                pass
+            
+            if thumbnail:
+                try:
+                    await update.message.reply_photo(
+                        photo=thumbnail,
+                        caption=fallback_caption,
+                        parse_mode="HTML",
+                        reply_to_message_id=update.message.message_id
+                    )
+                except:
+                    await update.message.reply_text(
+                        fallback_caption,
+                        parse_mode="HTML",
+                        reply_to_message_id=update.message.message_id,
+                        disable_web_page_preview=False
+                    )
+            else:
+                await update.message.reply_text(
+                    fallback_caption,
+                    parse_mode="HTML",
+                    reply_to_message_id=update.message.message_id,
+                    disable_web_page_preview=False
+                )
+            return
+        
+        # Step 3: Send the video
+        await wait_msg.edit_text("📤 Uploading video to Telegram...")
+        
+        file_size_mb = file_size / (1024 * 1024)
+        title_safe = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
+        video_caption = (
+            f"<b>{title_safe}</b>\n\n"
+            f"🎞 Quality: <b>{quality}</b>\n"
+            f"📦 Size: <b>{file_size_mb:.1f}MB</b>"
+        )
+        
+        # Create filename from title (sanitize)
+        safe_title = re.sub(r'[^\w\s-]', '', title)[:50].strip()
+        if not safe_title:
+            safe_title = "video"
+        filename = f"{safe_title}.mp4"
+        
         try:
             await wait_msg.delete()
         except:
             pass
         
-        # Send photo with caption
-        if thumbnail:
+        # Send as video
+        try:
+            await update.message.reply_video(
+                video=BytesIO(video_bytes),
+                filename=filename,
+                caption=video_caption,
+                parse_mode="HTML",
+                reply_to_message_id=update.message.message_id,
+                supports_streaming=True
+            )
+        except Exception as video_err:
+            # If video fails, try as document
             try:
-                await update.message.reply_photo(
-                    photo=thumbnail,
-                    caption=caption,
+                await update.message.reply_document(
+                    document=BytesIO(video_bytes),
+                    filename=filename,
+                    caption=video_caption,
                     parse_mode="HTML",
                     reply_to_message_id=update.message.message_id
                 )
-            except Exception as photo_err:
-                # If photo fails, send text message with the info
+            except Exception as doc_err:
+                # Last resort: send link
                 await update.message.reply_text(
-                    caption + f"\n\n🖼 Thumbnail: {thumbnail}",
+                    f"{video_caption}\n\n"
+                    f"⚠️ Failed to upload video\n\n"
+                    f"⬇️ <a href='{download_url}'>Download MP4</a>",
                     parse_mode="HTML",
                     reply_to_message_id=update.message.message_id,
                     disable_web_page_preview=False
                 )
-        else:
-            # No thumbnail, just send text
-            await update.message.reply_text(
-                caption,
-                parse_mode="HTML",
-                reply_to_message_id=update.message.message_id,
-                disable_web_page_preview=False
-            )
+        
+        # Clean up
+        del video_bytes
+        gc.collect()
         
     except RuntimeError as e:
-        await wait_msg.edit_text(
-            f"❌ Failed to fetch download link.\n\n<i>{str(e)}</i>\n\nTry again later.",
-            parse_mode="HTML"
-        )
+        try:
+            await wait_msg.edit_text(
+                f"❌ Failed to process video.\n\n<i>{str(e)}</i>\n\nTry again later.",
+                parse_mode="HTML"
+            )
+        except:
+            pass
     except Exception as e:
         error_msg = str(e)[:100] if str(e) else "Unknown error"
-        await wait_msg.edit_text(
-            f"❌ Failed to fetch download link.\n\n<i>{error_msg}</i>\n\nTry again later.",
-            parse_mode="HTML"
-        )
+        try:
+            await wait_msg.edit_text(
+                f"❌ Failed to process video.\n\n<i>{error_msg}</i>\n\nTry again later.",
+                parse_mode="HTML"
+            )
+        except:
+            pass
 
 # ==== 14. Text Message Handler for Bin Search ====
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
