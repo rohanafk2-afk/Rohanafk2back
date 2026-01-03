@@ -45,6 +45,7 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
 
 # ==== 1.05 Pyrogram for Large File Uploads (500MB+) ====
 # Pyrogram uses MTProto API which supports up to 2GB file uploads
