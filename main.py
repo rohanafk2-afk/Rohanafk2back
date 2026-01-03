@@ -8767,24 +8767,29 @@ async def merge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Create output
         merged_content = '\n'.join(unique_lines)
+        file_bytes = merged_content.encode('utf-8')
+        file_size_mb = len(file_bytes) / (1024 * 1024)
         
         # Generate filename
         timestamp = int(time.time())
         filename = f"merged_{len(files)}files_{len(unique_lines)}lines_{timestamp}.txt"
         
-        # Send the merged file
-        await query.message.reply_document(
-            document=BytesIO(merged_content.encode('utf-8')),
+        caption = (
+            f"📎 Merged File\n\n"
+            f"📁 Files merged: {len(files)}\n"
+            f"📄 Original lines: {original_count:,}\n"
+            f"♻️ Duplicates removed: {duplicates_removed:,}\n"
+            f"✅ Final lines: {len(unique_lines):,}\n"
+            f"{'🃏 Sorted by BIN' if cards_detected > 50 else '🔤 Sorted alphabetically'}"
+        )
+        
+        # Send the merged file - use smart sender for large files
+        await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=filename,
-            caption=(
-                f"📎 <b>Merged File</b>\n\n"
-                f"📁 Files merged: <b>{len(files)}</b>\n"
-                f"📄 Original lines: <b>{original_count:,}</b>\n"
-                f"♻️ Duplicates removed: <b>{duplicates_removed:,}</b>\n"
-                f"✅ Final lines: <b>{len(unique_lines):,}</b>\n"
-                f"{'🃏 Sorted by BIN' if cards_detected > 50 else '🔤 Sorted alphabetically'}"
-            ),
-            parse_mode="HTML"
+            caption=caption
         )
         
         # Clear session
@@ -8833,14 +8838,17 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         
         content = "\n".join([c['formatted'] for c in cards])
+        file_bytes = content.encode('utf-8')
         info_str, details = get_bin_info(bin_num)
         flag = (details or {}).get("country_flag", "")
         
-        await update.message.reply_document(
-            document=BytesIO(content.encode()),
+        await send_large_document(
+            bot=context.bot,
+            chat_id=update.message.chat.id,
+            content=file_bytes,
             filename=f"bin_{bin_num}_{len(cards)}.txt",
             caption=f"🏦 BIN: {bin_num} {flag}\n📊 Cards: {len(cards)}\n💳 {info_str}",
-            reply_to_message_id=update.message.message_id
+            reply_to=update.message.message_id
         )
         return
     
@@ -8884,26 +8892,33 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # Create file with cards for this BIN
         file_content = "\n".join([card['formatted'] for card in cards])
+        file_bytes = file_content.encode('utf-8')
         file_name = f"bin_{bin_num}_{int(time.time())}.txt"
         
         # Get bin info
         bin_info_str, bin_details = get_bin_info(bin_num)
+        flag = (bin_details or {}).get("country_flag", "")
+        info_line = f"🏦 Info: {bin_info_str}{(' ' + flag) if flag else ''}"
+        
+        caption = (
+            f"🔍 BIN: {bin_num}\n"
+            f"📁 Cards: {len(cards):,}\n"
+            f"{info_line}\n"
+            f"👤 User: {session_data['username']}"
+        )
         
         try:
-            with BytesIO(file_content.encode('utf-8')) as file_buffer:
-                file_buffer.name = file_name
-                
-                flag = (bin_details or {}).get("country_flag", "")
-                info_line = f"🏦 Info: {bin_info_str}{(' ' + flag) if flag else ''}"
-                await context.bot.send_document(
-                    chat_id=update.message.chat.id,
-                    document=file_buffer,
-                    caption=(
-                        f"🔍 BIN: `{bin_num}`\n"
-                        f"📁 Cards: {len(cards):,}\n"
-                        f"{info_line}\n"
-                        f"👤 User: {session_data['username']}"
-                    ),
+            success = await send_large_document(
+                bot=context.bot,
+                chat_id=update.message.chat.id,
+                content=file_bytes,
+                filename=file_name,
+                caption=caption,
+                reply_to=update.message.message_id
+            )
+            if not success:
+                await update.message.reply_text(
+                    f"⚠️ File too large. Set API_ID/API_HASH for large file support.",
                     reply_to_message_id=update.message.message_id
                 )
         except Exception as e:
