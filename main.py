@@ -8018,13 +8018,8 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
         
-        # Step 3: Send the video as document (best quality, any size)
+        # Step 3: Prepare upload
         file_size_mb = file_size / (1024 * 1024)
-        await wait_msg.edit_text(
-            f"📤 Uploading to Telegram ({file_size_mb:.1f}MB)...\n\n"
-            f"<i>This may take a few minutes for large files...</i>",
-            parse_mode="HTML"
-        )
         
         # Caption with download link included
         video_caption = (
@@ -8040,7 +8035,58 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_title = "video"
         filename = f"{safe_title}.mp4"
         
-        # Write to temp file for reliable upload (BytesIO can timeout on large files)
+        # Telegram Bot API limit is 50MB for uploads
+        if file_size_mb > 50:
+            # File too large for Telegram - send thumbnail with download link
+            try:
+                await wait_msg.delete()
+            except:
+                pass
+            
+            large_file_caption = (
+                f"<b>{title_safe}</b>\n\n"
+                f"🎞 Quality: <b>{quality}</b>\n"
+                f"📦 Size: <b>{file_size_mb:.1f}MB</b>\n\n"
+                f"⚠️ <i>File too large for Telegram (max 50MB)</i>\n\n"
+                f"⬇️ <a href='{download_url}'>Click here to download</a>"
+            )
+            
+            # Send thumbnail with info
+            if thumbnail:
+                try:
+                    await update.message.reply_photo(
+                        photo=thumbnail,
+                        caption=large_file_caption,
+                        parse_mode="HTML",
+                        reply_to_message_id=update.message.message_id
+                    )
+                except:
+                    await update.message.reply_text(
+                        large_file_caption,
+                        parse_mode="HTML",
+                        reply_to_message_id=update.message.message_id,
+                        disable_web_page_preview=False
+                    )
+            else:
+                await update.message.reply_text(
+                    large_file_caption,
+                    parse_mode="HTML",
+                    reply_to_message_id=update.message.message_id,
+                    disable_web_page_preview=False
+                )
+            
+            del video_bytes
+            gc.collect()
+            return
+        
+        # File is under 50MB - try to upload
+        await wait_msg.edit_text(
+            f"📤 Uploading to Telegram ({file_size_mb:.1f}MB)...\n\n"
+            f"<i>Please wait...</i>",
+            parse_mode="HTML"
+        )
+        
+        # Write to temp file for reliable upload
         temp_path = f"/tmp/jork_{uid}_{int(time.time())}.mp4"
         try:
             with open(temp_path, 'wb') as f:
@@ -8055,34 +8101,11 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
             
-            # Send as document (most reliable for large files)
             upload_success = False
             last_error = ""
             
-            # Try document upload with retries
-            for attempt in range(3):
-                try:
-                    with open(temp_path, 'rb') as video_file:
-                        await update.message.reply_document(
-                            document=video_file,
-                            filename=filename,
-                            caption=video_caption,
-                            parse_mode="HTML",
-                            reply_to_message_id=update.message.message_id,
-                            read_timeout=300,  # 5 min read timeout
-                            write_timeout=300,  # 5 min write timeout
-                            connect_timeout=60
-                        )
-                    upload_success = True
-                    break
-                except Exception as e:
-                    last_error = str(e)
-                    if attempt < 2:
-                        await asyncio.sleep(2)  # Wait before retry
-                    continue
-            
-            # If document fails, try as video
-            if not upload_success:
+            # Try VIDEO (media) first - better preview in chat
+            for attempt in range(2):
                 try:
                     with open(temp_path, 'rb') as video_file:
                         await update.message.reply_video(
@@ -8092,24 +8115,65 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             parse_mode="HTML",
                             reply_to_message_id=update.message.message_id,
                             supports_streaming=True,
-                            read_timeout=300,
-                            write_timeout=300,
-                            connect_timeout=60
+                            read_timeout=120,
+                            write_timeout=120,
+                            connect_timeout=30
                         )
                     upload_success = True
-                except Exception as video_err:
-                    last_error = str(video_err)
+                    break
+                except Exception as e:
+                    last_error = str(e)
+                    if attempt < 1:
+                        await asyncio.sleep(1)
+                    continue
+            
+            # If video fails, try as document
+            if not upload_success:
+                for attempt in range(2):
+                    try:
+                        with open(temp_path, 'rb') as video_file:
+                            await update.message.reply_document(
+                                document=video_file,
+                                filename=filename,
+                                caption=video_caption,
+                                parse_mode="HTML",
+                                reply_to_message_id=update.message.message_id,
+                                read_timeout=120,
+                                write_timeout=120,
+                                connect_timeout=30
+                            )
+                        upload_success = True
+                        break
+                    except Exception as e:
+                        last_error = str(e)
+                        if attempt < 1:
+                            await asyncio.sleep(1)
+                        continue
             
             if not upload_success:
-                # Last resort: send link only
-                await update.message.reply_text(
-                    f"{video_caption}\n\n"
-                    f"⚠️ Upload failed: {last_error[:50]}\n"
-                    f"Please use the manual download link above.",
-                    parse_mode="HTML",
-                    reply_to_message_id=update.message.message_id,
-                    disable_web_page_preview=False
-                )
+                # Send thumbnail with link as fallback
+                if thumbnail:
+                    try:
+                        await update.message.reply_photo(
+                            photo=thumbnail,
+                            caption=f"{video_caption}\n\n⚠️ <i>Upload failed - use link above</i>",
+                            parse_mode="HTML",
+                            reply_to_message_id=update.message.message_id
+                        )
+                    except:
+                        await update.message.reply_text(
+                            f"{video_caption}\n\n⚠️ Upload failed: {last_error[:40]}",
+                            parse_mode="HTML",
+                            reply_to_message_id=update.message.message_id,
+                            disable_web_page_preview=False
+                        )
+                else:
+                    await update.message.reply_text(
+                        f"{video_caption}\n\n⚠️ Upload failed: {last_error[:40]}",
+                        parse_mode="HTML",
+                        reply_to_message_id=update.message.message_id,
+                        disable_web_page_preview=False
+                    )
         
         finally:
             # Clean up temp file
