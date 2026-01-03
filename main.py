@@ -232,6 +232,85 @@ async def _upload_large_document_pyrogram(chat_id: int, file_path: str, filename
                 pass
 
 
+async def download_large_file_pyrogram(file_id: str, file_size: int) -> bytes:
+    """
+    Download large file using Pyrogram (supports files > 20MB up to 2GB).
+    Returns file bytes or None if failed.
+    """
+    if not _pyrogram_available:
+        print("⚠️ Pyrogram not available for download")
+        return None
+    
+    config = _get_pyrogram_config()
+    if not config:
+        print("⚠️ Pyrogram config missing for download")
+        return None
+    
+    client = None
+    temp_path = f"/tmp/download_{int(time.time())}_{random.randint(1000, 9999)}"
+    
+    try:
+        # Create a fresh client for this download
+        client = PyroClient(
+            name=f"download_{int(time.time())}",
+            api_id=config["api_id"],
+            api_hash=config["api_hash"],
+            bot_token=config["bot_token"],
+            workdir="/tmp",
+            no_updates=True,
+            in_memory=True
+        )
+        
+        print(f"📥 Starting Pyrogram client for download...")
+        await client.start()
+        print(f"✅ Pyrogram client started, downloading file...")
+        
+        # Download the file
+        downloaded_path = await client.download_media(
+            file_id,
+            file_name=temp_path
+        )
+        
+        if downloaded_path and os.path.exists(downloaded_path):
+            print(f"✅ Pyrogram download successful: {downloaded_path}")
+            with open(downloaded_path, 'rb') as f:
+                file_bytes = f.read()
+            
+            # Clean up temp file
+            try:
+                os.remove(downloaded_path)
+            except:
+                pass
+            
+            return file_bytes
+        else:
+            print(f"❌ Pyrogram download failed - file not found")
+            return None
+        
+    except FloodWait as e:
+        print(f"⚠️ FloodWait during download: waiting {e.value}s...")
+        await asyncio.sleep(e.value + 1)
+        return None
+    except Exception as e:
+        print(f"❌ Pyrogram download error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+    finally:
+        if client:
+            try:
+                await client.stop()
+                print("🔌 Pyrogram download client stopped")
+            except:
+                pass
+        # Clean up any temp files
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+
+
 async def send_large_document(bot, chat_id: int, content: bytes, filename: str, caption: str, reply_to: int = None) -> bool:
     """
     Smart document sender - uses Pyrogram for large files (>45MB), standard Bot API otherwise.
@@ -3404,21 +3483,54 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_to_message_id=update.message.message_id
             )
             try:
-                # Telegram Bot API has practical file download limits; fail fast on very large files.
+                # For files > 20MB, use Pyrogram to download
                 if file_size > 20 * 1024 * 1024:
-                    await processing_msg.edit_text(
-                        f"⚠️ File too large: {file_size_mb:.1f}MB (Telegram limit: 20MB)\n\n"
-                        "🌐 *For large files (up to 500MB):*\n"
-                        "1. Upload to a file host (transfer.sh, file.io, catbox.moe)\n"
-                        "2. Use: `/clean <URL>`\n\n"
-                        "Example:\n"
-                        "`/clean https://transfer.sh/abc123/cards.txt`",
-                        parse_mode="Markdown"
-                    )
-                    return
-
-                file = await context.bot.get_file(replied_msg.document.file_id)
-                data_text = await download_file_content(file)
+                    if _pyrogram_available and _get_pyrogram_config():
+                        await processing_msg.edit_text(
+                            f"📥 Downloading large file ({file_size_mb:.1f}MB) via MTProto...\n\n"
+                            f"<i>This may take a moment...</i>",
+                            parse_mode="HTML"
+                        )
+                        file_bytes = await download_large_file_pyrogram(
+                            replied_msg.document.file_id,
+                            file_size
+                        )
+                        if file_bytes:
+                            for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                                try:
+                                    data_text = file_bytes.decode(encoding)
+                                    break
+                                except UnicodeDecodeError:
+                                    continue
+                            else:
+                                data_text = file_bytes.decode('utf-8', errors='ignore')
+                            
+                            if not data_text or not data_text.strip():
+                                await processing_msg.edit_text("❌ File is empty or could not be read.")
+                                return
+                            await processing_msg.edit_text(f"🔍 Processing {file_size_mb:.1f}MB...")
+                        else:
+                            await processing_msg.edit_text(
+                                f"❌ Failed to download large file.\n\n"
+                                "🌐 *Alternative - use URL:*\n"
+                                "1. Upload to: transfer.sh, file.io, catbox.moe\n"
+                                "2. Use: `/clean <URL>`",
+                                parse_mode="Markdown"
+                            )
+                            return
+                    else:
+                        await processing_msg.edit_text(
+                            f"⚠️ File too large: {file_size_mb:.1f}MB\n\n"
+                            "💡 *Large file support requires API_ID & API_HASH*\n\n"
+                            "🌐 *Or use URL method:*\n"
+                            "1. Upload to: transfer.sh, file.io, catbox.moe\n"
+                            "2. Use: `/clean <URL>`",
+                            parse_mode="Markdown"
+                        )
+                        return
+                else:
+                    file = await context.bot.get_file(replied_msg.document.file_id)
+                    data_text = await download_file_content(file)
                 
                 if not data_text or not data_text.strip():
                     await processing_msg.edit_text("❌ File is empty or could not be read.")
@@ -3429,10 +3541,9 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
                     await processing_msg.edit_text(
-                        "⚠️ File too large for Telegram Bot API (20MB limit).\n\n"
-                        "🌐 *For large files (up to 500MB):*\n"
-                        "1. Upload to: transfer.sh, file.io, catbox.moe, pastebin\n"
-                        "2. Use: `/clean <URL>`",
+                        "⚠️ File too large for Telegram Bot API.\n\n"
+                        "💡 Set API_ID & API_HASH for large file support,\n"
+                        "or use `/clean <URL>` with a file host.",
                         parse_mode="Markdown"
                     )
                 else:
@@ -6616,20 +6727,56 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_to_message_id=update.message.message_id
             )
             try:
+                # For files > 20MB, use Pyrogram to download
                 if file_size > 20 * 1024 * 1024:
-                    await processing_msg.edit_text(
-                        f"⚠️ File too large: {file_size_mb:.1f}MB (Telegram limit: 20MB)\n\n"
-                        "🌐 *For large files (up to 500MB):*\n"
-                        "1. Upload to a file host (transfer.sh, file.io, catbox.moe)\n"
-                        "2. Use: `/sort <URL>`\n\n"
-                        "Example:\n"
-                        "`/sort https://transfer.sh/abc123/cards.txt`",
-                        parse_mode="Markdown"
-                    )
-                    return
-
-                file = await context.bot.get_file(replied_msg.document.file_id)
-                data_text = await download_file_content(file)
+                    if _pyrogram_available and _get_pyrogram_config():
+                        await processing_msg.edit_text(
+                            f"📥 Downloading large file ({file_size_mb:.1f}MB) via MTProto...\n\n"
+                            f"<i>This may take a moment...</i>",
+                            parse_mode="HTML"
+                        )
+                        file_bytes = await download_large_file_pyrogram(
+                            replied_msg.document.file_id,
+                            file_size
+                        )
+                        if file_bytes:
+                            # Decode the file
+                            for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                                try:
+                                    data_text = file_bytes.decode(encoding)
+                                    break
+                                except UnicodeDecodeError:
+                                    continue
+                            else:
+                                data_text = file_bytes.decode('utf-8', errors='ignore')
+                            
+                            if not data_text or not data_text.strip():
+                                await processing_msg.edit_text("❌ File is empty or could not be read.")
+                                return
+                            await processing_msg.edit_text(f"🔍 Processing {file_size_mb:.1f}MB...")
+                        else:
+                            await processing_msg.edit_text(
+                                f"❌ Failed to download large file.\n\n"
+                                "🌐 *Alternative - use URL:*\n"
+                                "1. Upload to: transfer.sh, file.io, catbox.moe\n"
+                                "2. Use: `/sort <URL>`",
+                                parse_mode="Markdown"
+                            )
+                            return
+                    else:
+                        await processing_msg.edit_text(
+                            f"⚠️ File too large: {file_size_mb:.1f}MB\n\n"
+                            "💡 *Large file support requires API_ID & API_HASH*\n\n"
+                            "🌐 *Or use URL method:*\n"
+                            "1. Upload to: transfer.sh, file.io, catbox.moe\n"
+                            "2. Use: `/sort <URL>`",
+                            parse_mode="Markdown"
+                        )
+                        return
+                else:
+                    # Standard download for files under 20MB
+                    file = await context.bot.get_file(replied_msg.document.file_id)
+                    data_text = await download_file_content(file)
                 
                 if not data_text or not data_text.strip():
                     await processing_msg.edit_text("❌ File is empty or could not be read.")
@@ -6640,10 +6787,9 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
                     await processing_msg.edit_text(
-                        "⚠️ File too large for Telegram Bot API (20MB limit).\n\n"
-                        "🌐 *For large files (up to 500MB):*\n"
-                        "1. Upload to: transfer.sh, file.io, catbox.moe, pastebin\n"
-                        "2. Use: `/sort <URL>`",
+                        "⚠️ File too large for Telegram Bot API.\n\n"
+                        "💡 Set API_ID & API_HASH for large file support,\n"
+                        "or use `/sort <URL>` with a file host.",
                         parse_mode="Markdown"
                     )
                 else:
@@ -7272,30 +7418,67 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_to_message_id=update.message.message_id
             )
             try:
+                # For files > 20MB, use Pyrogram to download
                 if file_size > 20 * 1024 * 1024:
-                    await msg.edit_text(
-                        f"⚠️ File too large: {file_size_mb:.1f}MB (Telegram limit: 20MB)\n\n"
-                        "🌐 *For large files (up to 500MB):*\n"
-                        "1. Upload to a file host (transfer.sh, file.io, catbox.moe)\n"
-                        "2. Use: `/filter <URL>`\n\n"
-                        "Example:\n"
-                        "`/filter https://transfer.sh/abc123/cards.txt`",
-                        parse_mode="Markdown"
-                    )
+                    if _pyrogram_available and _get_pyrogram_config():
+                        await msg.edit_text(
+                            f"📥 Downloading large file ({file_size_mb:.1f}MB) via MTProto...\n\n"
+                            f"<i>This may take a moment...</i>",
+                            parse_mode="HTML"
+                        )
+                        file_bytes = await download_large_file_pyrogram(
+                            replied.document.file_id,
+                            file_size
+                        )
+                        if file_bytes:
+                            for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
+                                try:
+                                    data_text = file_bytes.decode(encoding)
+                                    break
+                                except UnicodeDecodeError:
+                                    continue
+                            else:
+                                data_text = file_bytes.decode('utf-8', errors='ignore')
+                            
+                            if not data_text or not data_text.strip():
+                                await msg.edit_text("❌ File is empty or could not be read.")
+                                return
+                            await msg.edit_text(f"🔍 Processing {file_size_mb:.1f}MB...")
+                        else:
+                            await msg.edit_text(
+                                f"❌ Failed to download large file.\n\n"
+                                "🌐 *Alternative - use URL:*\n"
+                                "1. Upload to: transfer.sh, file.io, catbox.moe\n"
+                                "2. Use: `/filter <URL>`",
+                                parse_mode="Markdown"
+                            )
+                            return
+                    else:
+                        await msg.edit_text(
+                            f"⚠️ File too large: {file_size_mb:.1f}MB\n\n"
+                            "💡 *Large file support requires API_ID & API_HASH*\n\n"
+                            "🌐 *Or use URL method:*\n"
+                            "1. Upload to: transfer.sh, file.io, catbox.moe\n"
+                            "2. Use: `/filter <URL>`",
+                            parse_mode="Markdown"
+                        )
+                        return
+                else:
+                    file = await context.bot.get_file(replied.document.file_id)
+                    file_bytes = await file.download_as_bytearray()
+                    data_text = file_bytes.decode('utf-8', errors='ignore')
+                
+                if not data_text or not data_text.strip():
+                    await msg.edit_text("❌ File is empty or could not be read.")
                     return
-
-                file = await context.bot.get_file(replied.document.file_id)
-                file_bytes = await file.download_as_bytearray()
-                data_text = file_bytes.decode('utf-8', errors='ignore')
                 await msg.edit_text(f"🔍 Processing {file_size_mb:.1f}MB...")
             except Exception as e:
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
                     await msg.edit_text(
-                        "⚠️ File too large for Telegram Bot API (20MB limit).\n\n"
-                        "🌐 *For large files (up to 500MB):*\n"
-                        "1. Upload to: transfer.sh, file.io, catbox.moe, pastebin\n"
-                        "2. Use: `/filter <URL>`",
+                        "⚠️ File too large for Telegram Bot API.\n\n"
+                        "💡 Set API_ID & API_HASH for large file support,\n"
+                        "or use `/filter <URL>` with a file host.",
                         parse_mode="Markdown"
                     )
                 else:
