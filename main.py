@@ -2640,6 +2640,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /clean <data|file|URL> - Advanced cleaner\n"
         "• /sort <data|file|URL> - Clean & sort cards\n"
         "• /split [size] - Split large files (reply)\n"
+        "• /merge - Merge multiple files into one\n"
         "• /bin <bins/cards> - BIN lookup\n\n"
         "🌐 *Large Files (100-500MB):*\n"
         "Upload to transfer.sh, file.io, catbox.moe,\n"
@@ -3080,6 +3081,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lock("/sort <data|file|URL> — Clean & sort cards", "sort"),
         lock("/bin <bins/cards/mixed> — BIN lookup", "bin"),
         "/split [size\\_mb] — Split large files (reply to file)",
+        "/merge — Merge multiple files into one (sorted, clean)",
     ]))
 
     # Details Fetching Tools
@@ -7783,11 +7785,11 @@ async def split_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await status_msg.edit_text(f"❌ Error: {error_msg[:100]}")
 
-# ==== 13.7 /jork Command - Video Downloader ====
+# ==== 13.7 /jork Command - Video Downloader (Any Size, High Quality) ====
 _JORK_BASE_URL = "https://www.xoffline.com"
 _JORK_API_URL = f"{_JORK_BASE_URL}/callDownloaderApi"
 _JORK_API_TOKEN = "3c409435f781890e402cdf7312aa47f2a7e23594f5615ce524f8e711bc69acc5"
-_JORK_MAX_VIDEO_SIZE = 50 * 1024 * 1024  # 50MB Telegram limit for bots
+_JORK_MAX_VIDEO_SIZE = 2000 * 1024 * 1024  # 2GB - Telegram document limit
 
 def _fetch_video_info(video_url: str) -> dict:
     """
@@ -7860,52 +7862,53 @@ def _fetch_video_info(video_url: str) -> dict:
     except Exception as e:
         raise RuntimeError(f"Failed to parse response: {str(e)[:50]}")
 
-def _download_video_file(download_url: str, max_size: int = _JORK_MAX_VIDEO_SIZE) -> tuple:
+def _download_video_unlimited(download_url: str) -> tuple:
     """
-    Download video file from URL.
-    Returns: (video_bytes, file_size, error_msg)
+    Download video file from URL - NO SIZE LIMIT (up to 2GB for Telegram documents).
+    Returns: (video_bytes, file_size, content_length, error_msg)
     """
     try:
         session = get_http_session()
         
-        # First check file size with HEAD request
+        # Check file size with HEAD request
+        content_length = 0
         try:
             head = session.head(download_url, timeout=10, allow_redirects=True)
             content_length = int(head.headers.get('content-length', 0))
-            if content_length > max_size:
-                return None, content_length, f"Video too large ({content_length // (1024*1024)}MB). Max: {max_size // (1024*1024)}MB"
+            if content_length > _JORK_MAX_VIDEO_SIZE:
+                return None, 0, content_length, f"Video too large ({content_length // (1024*1024)}MB). Max: 2GB"
         except:
-            content_length = 0  # Unknown size, proceed anyway
+            pass  # Unknown size, proceed anyway
         
-        # Download the video
-        response = session.get(download_url, stream=True, timeout=120)
+        # Download the video with streaming
+        response = session.get(download_url, stream=True, timeout=600)  # 10 min timeout for large files
         response.raise_for_status()
         
         chunks = []
         downloaded = 0
         
-        for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
+        for chunk in response.iter_content(chunk_size=2 * 1024 * 1024):  # 2MB chunks for speed
             if chunk:
                 chunks.append(chunk)
                 downloaded += len(chunk)
                 
-                if downloaded > max_size:
-                    return None, downloaded, f"Video too large (>{max_size // (1024*1024)}MB)"
+                if downloaded > _JORK_MAX_VIDEO_SIZE:
+                    return None, downloaded, content_length, f"Video exceeds 2GB limit"
         
         video_bytes = b''.join(chunks)
-        return video_bytes, len(video_bytes), None
+        return video_bytes, len(video_bytes), content_length, None
         
     except requests.exceptions.Timeout:
-        return None, 0, "Download timed out"
+        return None, 0, 0, "Download timed out (try a smaller video)"
     except requests.exceptions.HTTPError as e:
-        return None, 0, f"HTTP error: {e.response.status_code}"
+        return None, 0, 0, f"HTTP error: {e.response.status_code}"
     except Exception as e:
-        return None, 0, f"Download failed: {str(e)[:50]}"
+        return None, 0, 0, f"Download failed: {str(e)[:50]}"
 
 async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /jork <video_url> - Download video and send to user
-    Works with various video platforms.
+    /jork <video_url> - Download video and send to user (any size, high quality)
+    Sends as document for max quality, always includes manual download link.
     """
     uid = update.effective_user.id
     uname = update.effective_user.first_name or "User"
@@ -7918,8 +7921,11 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<code>/jork &lt;video_url&gt;</code>\n\n"
             "<b>Example:</b>\n"
             "<code>/jork https://example.com/video</code>\n\n"
-            "Send a video URL and I'll download & send the video!\n\n"
-            "<i>Max video size: 50MB</i>",
+            "<b>Features:</b>\n"
+            "• Downloads any size video (up to 2GB)\n"
+            "• Highest quality available\n"
+            "• Sends as file for best quality\n"
+            "• Always includes manual download link",
             parse_mode="HTML",
             reply_to_message_id=update.message.message_id
         )
@@ -7955,26 +7961,31 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await wait_msg.edit_text("❌ Failed to get download URL.")
             return
         
+        title_safe = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
         # Step 2: Update status and download the video
         await wait_msg.edit_text(
             f"📥 Downloading video...\n\n"
-            f"<b>{title[:50]}{'...' if len(title) > 50 else ''}</b>\n"
-            f"🎞 Quality: {quality}",
+            f"<b>{title_safe[:50]}{'...' if len(title) > 50 else ''}</b>\n"
+            f"🎞 Quality: {quality}\n\n"
+            f"<i>This may take a while for large files...</i>",
             parse_mode="HTML"
         )
         
-        video_bytes, file_size, error = await loop.run_in_executor(
-            _executor, _download_video_file, download_url
+        video_bytes, file_size, content_length, error = await loop.run_in_executor(
+            _executor, _download_video_unlimited, download_url
         )
         
         if error:
-            # Video too large or download failed - send link instead
-            title_safe = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            
+            # Download failed - send thumbnail with link
             fallback_caption = (
                 f"<b>{title_safe}</b>\n\n"
-                f"🎞 Quality: <b>{quality}</b>\n\n"
-                f"⚠️ {error}\n\n"
+                f"🎞 Quality: <b>{quality}</b>\n"
+            )
+            if content_length > 0:
+                fallback_caption += f"📦 Size: <b>{content_length // (1024*1024)}MB</b>\n"
+            fallback_caption += (
+                f"\n⚠️ {error}\n\n"
                 f"⬇️ <a href='{download_url}'>Download MP4 manually</a>"
             )
             
@@ -8007,16 +8018,20 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
         
-        # Step 3: Send the video
-        await wait_msg.edit_text("📤 Uploading video to Telegram...")
-        
+        # Step 3: Send the video as document (best quality, any size)
         file_size_mb = file_size / (1024 * 1024)
-        title_safe = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        await wait_msg.edit_text(
+            f"📤 Uploading to Telegram ({file_size_mb:.1f}MB)...\n\n"
+            f"<i>Please wait...</i>",
+            parse_mode="HTML"
+        )
         
+        # Caption with download link included
         video_caption = (
             f"<b>{title_safe}</b>\n\n"
             f"🎞 Quality: <b>{quality}</b>\n"
-            f"📦 Size: <b>{file_size_mb:.1f}MB</b>"
+            f"📦 Size: <b>{file_size_mb:.1f}MB</b>\n\n"
+            f"⬇️ <a href='{download_url}'>Manual Download</a>"
         )
         
         # Create filename from title (sanitize)
@@ -8030,36 +8045,42 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        # Send as video
+        # Send as document first (best quality, supports larger files)
+        upload_success = False
         try:
-            await update.message.reply_video(
-                video=BytesIO(video_bytes),
+            await update.message.reply_document(
+                document=BytesIO(video_bytes),
                 filename=filename,
                 caption=video_caption,
                 parse_mode="HTML",
-                reply_to_message_id=update.message.message_id,
-                supports_streaming=True
+                reply_to_message_id=update.message.message_id
             )
-        except Exception as video_err:
-            # If video fails, try as document
+            upload_success = True
+        except Exception as doc_err:
+            # Try as video if document fails
             try:
-                await update.message.reply_document(
-                    document=BytesIO(video_bytes),
+                await update.message.reply_video(
+                    video=BytesIO(video_bytes),
                     filename=filename,
                     caption=video_caption,
                     parse_mode="HTML",
-                    reply_to_message_id=update.message.message_id
-                )
-            except Exception as doc_err:
-                # Last resort: send link
-                await update.message.reply_text(
-                    f"{video_caption}\n\n"
-                    f"⚠️ Failed to upload video\n\n"
-                    f"⬇️ <a href='{download_url}'>Download MP4</a>",
-                    parse_mode="HTML",
                     reply_to_message_id=update.message.message_id,
-                    disable_web_page_preview=False
+                    supports_streaming=True
                 )
+                upload_success = True
+            except Exception as video_err:
+                pass
+        
+        if not upload_success:
+            # Last resort: send thumbnail with link
+            await update.message.reply_text(
+                f"{video_caption}\n\n"
+                f"⚠️ Failed to upload video to Telegram\n"
+                f"Please use the manual download link above.",
+                parse_mode="HTML",
+                reply_to_message_id=update.message.message_id,
+                disable_web_page_preview=False
+            )
         
         # Clean up
         del video_bytes
@@ -8082,6 +8103,244 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except:
             pass
+
+# ==== 13.8 /merge Command - Merge Multiple Files into One ====
+async def merge_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /merge - Merge multiple text files into one clean sorted file.
+    Reply to multiple forwarded files or use in a conversation.
+    """
+    uid = update.effective_user.id
+    uname = update.effective_user.first_name or "User"
+    
+    # Check if replying to a message with document
+    if not update.message.reply_to_message or not update.message.reply_to_message.document:
+        # Check if user has pending merge session
+        merge_key = f"merge_{uid}"
+        
+        if merge_key in context.user_data and context.user_data[merge_key].get('files'):
+            # User has files, show options
+            files = context.user_data[merge_key]['files']
+            keyboard = [
+                [InlineKeyboardButton(f"✅ Merge {len(files)} files", callback_data=f"merge_now:{uid}")],
+                [InlineKeyboardButton("➕ Add more files", callback_data=f"merge_add:{uid}")],
+                [InlineKeyboardButton("🗑️ Clear & start over", callback_data=f"merge_clear:{uid}")]
+            ]
+            
+            await update.message.reply_text(
+                f"📎 <b>Merge Session</b>\n\n"
+                f"Files added: <b>{len(files)}</b>\n"
+                f"Total lines: <b>{sum(f['lines'] for f in files):,}</b>\n\n"
+                f"Reply to more files with /merge to add them,\n"
+                f"or tap a button below:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                reply_to_message_id=update.message.message_id
+            )
+            return
+        
+        # Show usage
+        await update.message.reply_text(
+            "📎 <b>File Merger</b>\n\n"
+            "<b>Usage:</b>\n"
+            "1. Forward/upload multiple .txt files\n"
+            "2. Reply to each file with /merge to add it\n"
+            "3. When done, use /merge to merge all\n\n"
+            "<b>Features:</b>\n"
+            "• Merges multiple text files into one\n"
+            "• Removes duplicates\n"
+            "• Sorts lines (by BIN if cards detected)\n"
+            "• Cleans empty lines\n\n"
+            "<b>Example:</b>\n"
+            "1. Reply to file1.txt with /merge\n"
+            "2. Reply to file2.txt with /merge\n"
+            "3. Send /merge to combine them",
+            parse_mode="HTML",
+            reply_to_message_id=update.message.message_id
+        )
+        return
+    
+    # User is replying to a document - add it to merge session
+    doc = update.message.reply_to_message.document
+    file_name = doc.file_name or "file.txt"
+    file_size = doc.file_size
+    file_size_mb = file_size / (1024 * 1024)
+    
+    # Check file size
+    if file_size > 20 * 1024 * 1024:
+        await update.message.reply_text(
+            f"⚠️ File too large: {file_size_mb:.1f}MB\n"
+            f"Max file size: 20MB per file",
+            reply_to_message_id=update.message.message_id
+        )
+        return
+    
+    status_msg = await update.message.reply_text(
+        f"📥 Adding {file_name}...",
+        reply_to_message_id=update.message.message_id
+    )
+    
+    try:
+        # Download file
+        file = await context.bot.get_file(doc.file_id)
+        file_bytes = await file.download_as_bytearray()
+        
+        # Decode
+        content = ""
+        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+            try:
+                content = file_bytes.decode(encoding)
+                break
+            except:
+                continue
+        if not content:
+            content = file_bytes.decode('utf-8', errors='ignore')
+        
+        lines = [l.strip() for l in content.split('\n') if l.strip()]
+        
+        # Initialize or get merge session
+        merge_key = f"merge_{uid}"
+        if merge_key not in context.user_data:
+            context.user_data[merge_key] = {'files': [], 'created': time.time()}
+        
+        # Add file to session
+        context.user_data[merge_key]['files'].append({
+            'name': file_name,
+            'lines': len(lines),
+            'content': lines
+        })
+        
+        total_files = len(context.user_data[merge_key]['files'])
+        total_lines = sum(f['lines'] for f in context.user_data[merge_key]['files'])
+        
+        keyboard = [
+            [InlineKeyboardButton(f"✅ Merge {total_files} files now", callback_data=f"merge_now:{uid}")],
+            [InlineKeyboardButton("🗑️ Clear all", callback_data=f"merge_clear:{uid}")]
+        ]
+        
+        await status_msg.edit_text(
+            f"✅ <b>Added:</b> {file_name}\n"
+            f"📄 Lines: {len(lines):,}\n\n"
+            f"<b>Session total:</b>\n"
+            f"• Files: {total_files}\n"
+            f"• Lines: {total_lines:,}\n\n"
+            f"Reply to more files with /merge,\n"
+            f"or tap the button to merge now:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error: {str(e)[:100]}")
+
+async def merge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle merge command callbacks"""
+    query = update.callback_query
+    try:
+        await query.answer()
+    except:
+        pass
+    
+    data = query.data
+    if not data.startswith("merge_"):
+        return
+    
+    parts = data.split(":")
+    action = parts[0]
+    uid = int(parts[1]) if len(parts) > 1 else 0
+    
+    # Verify user
+    if query.from_user.id != uid:
+        await query.answer("This is not your session!", show_alert=True)
+        return
+    
+    merge_key = f"merge_{uid}"
+    
+    if action == "merge_clear":
+        if merge_key in context.user_data:
+            del context.user_data[merge_key]
+        await query.edit_message_text("🗑️ Merge session cleared.")
+        return
+    
+    if action == "merge_add":
+        await query.edit_message_text(
+            "📎 Reply to a .txt file with /merge to add it to the session."
+        )
+        return
+    
+    if action == "merge_now":
+        if merge_key not in context.user_data or not context.user_data[merge_key].get('files'):
+            await query.edit_message_text("❌ No files to merge. Add files first.")
+            return
+        
+        files = context.user_data[merge_key]['files']
+        
+        await query.edit_message_text(
+            f"🔄 Merging {len(files)} files...\n"
+            f"• Removing duplicates\n"
+            f"• Sorting lines\n"
+            f"• Cleaning data..."
+        )
+        
+        # Merge all lines
+        all_lines = []
+        for f in files:
+            all_lines.extend(f['content'])
+        
+        original_count = len(all_lines)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_lines = []
+        for line in all_lines:
+            if line not in seen:
+                seen.add(line)
+                unique_lines.append(line)
+        
+        duplicates_removed = original_count - len(unique_lines)
+        
+        # Check if lines look like cards (CC|MM|YY|CVV format)
+        card_pattern = re.compile(r'^\d{13,19}\|')
+        cards_detected = sum(1 for l in unique_lines[:100] if card_pattern.match(l))
+        
+        if cards_detected > 50:  # More than 50% look like cards
+            # Sort by BIN (first 6 digits)
+            unique_lines.sort(key=lambda x: x[:6] if len(x) >= 6 else x)
+        else:
+            # Regular alphabetical sort
+            unique_lines.sort()
+        
+        # Create output
+        merged_content = '\n'.join(unique_lines)
+        
+        # Generate filename
+        timestamp = int(time.time())
+        filename = f"merged_{len(files)}files_{len(unique_lines)}lines_{timestamp}.txt"
+        
+        # Send the merged file
+        await query.message.reply_document(
+            document=BytesIO(merged_content.encode('utf-8')),
+            filename=filename,
+            caption=(
+                f"📎 <b>Merged File</b>\n\n"
+                f"📁 Files merged: <b>{len(files)}</b>\n"
+                f"📄 Original lines: <b>{original_count:,}</b>\n"
+                f"♻️ Duplicates removed: <b>{duplicates_removed:,}</b>\n"
+                f"✅ Final lines: <b>{len(unique_lines):,}</b>\n"
+                f"{'🃏 Sorted by BIN' if cards_detected > 50 else '🔤 Sorted alphabetically'}"
+            ),
+            parse_mode="HTML"
+        )
+        
+        # Clear session
+        del context.user_data[merge_key]
+        
+        await query.edit_message_text(
+            f"✅ Merge complete!\n\n"
+            f"📁 {len(files)} files merged\n"
+            f"♻️ {duplicates_removed:,} duplicates removed\n"
+            f"✅ {len(unique_lines):,} unique lines"
+        )
 
 # ==== 14. Text Message Handler for Bin Search ====
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -8307,6 +8566,7 @@ async def main():
         app.add_handler(CommandHandler("filter", filter_cmd))
         app.add_handler(CommandHandler("split", split_cmd))
         app.add_handler(CommandHandler("jork", jork_cmd))
+        app.add_handler(CommandHandler("merge", merge_cmd))
 
         # New commands
         app.add_handler(CommandHandler("site", site_cmd))
@@ -8315,6 +8575,7 @@ async def main():
         app.add_handler(CallbackQueryHandler(sort_callback, pattern="^s_"))
         app.add_handler(CallbackQueryHandler(clean_callback, pattern="^c_"))
         app.add_handler(CallbackQueryHandler(filter_callback, pattern="^f_"))
+        app.add_handler(CallbackQueryHandler(merge_callback, pattern="^merge_"))
 
         # Admin commands
         app.add_handler(CommandHandler("approve", approve))
