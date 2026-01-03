@@ -2646,7 +2646,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "pastebin, dropbox, etc. Then use:\n"
         "`/sort <URL>` or `/clean <URL>` or `/filter <URL>`\n\n"
         "🔍 *Details Fetching:*\n"
-        "• /site <url> - Analyze website gateway\n\n"
+        "• /site <url> - Analyze website gateway\n"
+        "• /jork <url> - Video downloader\n\n"
         "🧰 *Basic Commands:*\n"
         "• /start - Welcome message\n"
         "• /help - This help message\n"
@@ -3084,6 +3085,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Details Fetching Tools
     parts.append("🔍 *Details Fetching Tools*\n" + "\n".join([
         lock("/site <url> — Analyze website gateway/captcha", "site"),
+        "/jork <url> — Video downloader",
     ]))
 
     # Basic Tools
@@ -7781,6 +7783,184 @@ async def split_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await status_msg.edit_text(f"❌ Error: {error_msg[:100]}")
 
+# ==== 13.7 /jork Command - Video Downloader ====
+_JORK_BASE_URL = "https://www.xoffline.com"
+_JORK_API_URL = f"{_JORK_BASE_URL}/callDownloaderApi"
+_JORK_API_TOKEN = "3c409435f781890e402cdf7312aa47f2a7e23594f5615ce524f8e711bc69acc5"
+
+def _fetch_video_download(video_url: str) -> dict:
+    """
+    Fetch video download info from xoffline.com API.
+    Returns dict with title, thumbnail, quality, url.
+    """
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": _JORK_BASE_URL + "/",
+    })
+    
+    # Get session tokens
+    try:
+        session.get(_JORK_BASE_URL + "/", timeout=20)
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to server: {str(e)[:50]}")
+    
+    csrf = session.cookies.get("x-csrf-token")
+    sid = session.cookies.get("connect.sid")
+    
+    if not csrf or not sid:
+        raise RuntimeError("Failed to get session tokens")
+    
+    # Make API request
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": _JORK_BASE_URL,
+        "X-CSRF-Token": csrf,
+    }
+    
+    payload = {
+        "apiToken": _JORK_API_TOKEN,
+        "apiValue": video_url,
+    }
+    
+    try:
+        r = session.post(_JORK_API_URL, headers=headers, json=payload, timeout=30)
+        r.raise_for_status()
+    except requests.exceptions.Timeout:
+        raise RuntimeError("Request timed out")
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"HTTP error: {e.response.status_code}")
+    except Exception as e:
+        raise RuntimeError(f"Request failed: {str(e)[:50]}")
+    
+    try:
+        data = r.json()
+        if "data" not in data or not data["data"]:
+            raise RuntimeError("No data returned from API")
+        
+        video_data = data["data"][0]
+        
+        final_url = video_data.get("url", "")
+        if final_url.startswith("https://href.li/?"):
+            final_url = final_url.replace("https://href.li/?", "", 1)
+        
+        return {
+            "title": video_data.get("title", "Unknown Title"),
+            "thumbnail": video_data.get("thumbnail", ""),
+            "quality": video_data.get("quality", "Unknown"),
+            "url": final_url,
+        }
+    except KeyError as e:
+        raise RuntimeError(f"Invalid API response format")
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse response: {str(e)[:50]}")
+
+async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /jork <video_url> - Fetch video download link
+    Works with various video platforms.
+    """
+    uid = update.effective_user.id
+    uname = update.effective_user.first_name or "User"
+    
+    # Get the URL from command arguments
+    if not context.args:
+        await update.message.reply_text(
+            "🎬 <b>Video Downloader</b>\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/jork &lt;video_url&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/jork https://example.com/video</code>\n\n"
+            "Send a video URL and get the direct download link!",
+            parse_mode="HTML",
+            reply_to_message_id=update.message.message_id
+        )
+        return
+    
+    video_url = context.args[0].strip()
+    
+    # Basic URL validation
+    if not video_url.startswith(("http://", "https://")):
+        await update.message.reply_text(
+            "❌ Invalid URL. Please provide a valid video URL starting with http:// or https://",
+            reply_to_message_id=update.message.message_id
+        )
+        return
+    
+    # Send processing message
+    wait_msg = await update.message.reply_text(
+        "⏳ Processing your link...",
+        reply_to_message_id=update.message.message_id
+    )
+    
+    try:
+        # Run the blocking request in executor to avoid blocking the event loop
+        loop = asyncio.get_running_loop()
+        info = await loop.run_in_executor(_executor, _fetch_video_download, video_url)
+        
+        # Build caption
+        title = info.get("title", "Unknown")
+        quality = info.get("quality", "Unknown")
+        download_url = info.get("url", "")
+        thumbnail = info.get("thumbnail", "")
+        
+        # Escape HTML special chars in title
+        title_safe = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
+        caption = (
+            f"<b>{title_safe}</b>\n\n"
+            f"🎞 Quality: <b>{quality}</b>\n\n"
+            f"⬇️ <a href='{download_url}'>Download MP4</a>"
+        )
+        
+        # Delete the waiting message
+        try:
+            await wait_msg.delete()
+        except:
+            pass
+        
+        # Send photo with caption
+        if thumbnail:
+            try:
+                await update.message.reply_photo(
+                    photo=thumbnail,
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_to_message_id=update.message.message_id
+                )
+            except Exception as photo_err:
+                # If photo fails, send text message with the info
+                await update.message.reply_text(
+                    caption + f"\n\n🖼 Thumbnail: {thumbnail}",
+                    parse_mode="HTML",
+                    reply_to_message_id=update.message.message_id,
+                    disable_web_page_preview=False
+                )
+        else:
+            # No thumbnail, just send text
+            await update.message.reply_text(
+                caption,
+                parse_mode="HTML",
+                reply_to_message_id=update.message.message_id,
+                disable_web_page_preview=False
+            )
+        
+    except RuntimeError as e:
+        await wait_msg.edit_text(
+            f"❌ Failed to fetch download link.\n\n<i>{str(e)}</i>\n\nTry again later.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        error_msg = str(e)[:100] if str(e) else "Unknown error"
+        await wait_msg.edit_text(
+            f"❌ Failed to fetch download link.\n\n<i>{error_msg}</i>\n\nTry again later.",
+            parse_mode="HTML"
+        )
+
 # ==== 14. Text Message Handler for Bin Search ====
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages for bin search in /clean and /filter commands"""
@@ -8004,6 +8184,7 @@ async def main():
         app.add_handler(CommandHandler("clean", clean_cmd))
         app.add_handler(CommandHandler("filter", filter_cmd))
         app.add_handler(CommandHandler("split", split_cmd))
+        app.add_handler(CommandHandler("jork", jork_cmd))
 
         # New commands
         app.add_handler(CommandHandler("site", site_cmd))
