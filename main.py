@@ -137,6 +137,114 @@ async def _upload_large_file_pyrogram(chat_id: int, file_path: str, caption: str
         return False
 
 
+async def _upload_large_document_pyrogram(chat_id: int, file_path: str, filename: str, caption: str, reply_to: int = None) -> bool:
+    """
+    Upload large document using Pyrogram (supports up to 2GB).
+    Used for large text files from sort/clean/filter commands.
+    Returns True if successful, False otherwise.
+    """
+    client = _get_pyrogram_client()
+    if not client:
+        return False
+    
+    try:
+        # Start client if not running
+        if not client.is_connected:
+            await client.start()
+        
+        # Upload as document
+        await client.send_document(
+            chat_id=chat_id,
+            document=file_path,
+            caption=caption,
+            file_name=filename,
+            parse_mode="html",
+            reply_to_message_id=reply_to,
+            progress=None
+        )
+        return True
+        
+    except FloodWait as e:
+        # Telegram rate limit - wait and retry
+        await asyncio.sleep(e.value + 1)
+        try:
+            await client.send_document(
+                chat_id=chat_id,
+                document=file_path,
+                caption=caption,
+                file_name=filename,
+                parse_mode="html",
+                reply_to_message_id=reply_to
+            )
+            return True
+        except:
+            return False
+    except Exception as e:
+        print(f"Pyrogram document upload error: {e}")
+        return False
+
+
+async def send_large_document(bot, chat_id: int, content: bytes, filename: str, caption: str, reply_to: int = None) -> bool:
+    """
+    Smart document sender - uses Pyrogram for large files (>45MB), standard Bot API otherwise.
+    Returns True if successful, False otherwise.
+    """
+    file_size_mb = len(content) / (1024 * 1024)
+    
+    # For files > 45MB, try Pyrogram first (MTProto supports up to 2GB)
+    if file_size_mb > 45 and _pyrogram_available:
+        temp_path = f"/tmp/upload_{int(time.time())}_{random.randint(1000, 9999)}.txt"
+        try:
+            with open(temp_path, 'wb') as f:
+                f.write(content)
+            
+            # Convert caption to HTML if needed
+            html_caption = caption.replace('*', '<b>').replace('`', '<code>')
+            html_caption = html_caption.replace('<b>', '<b>', 1)  # Just use first bold
+            
+            success = await _upload_large_document_pyrogram(
+                chat_id=chat_id,
+                file_path=temp_path,
+                filename=filename,
+                caption=caption,  # Keep as plain text for simplicity
+                reply_to=reply_to
+            )
+            
+            if success:
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+                return True
+        except Exception as e:
+            print(f"Pyrogram document upload failed: {e}")
+        finally:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except:
+                pass
+    
+    # Standard Bot API upload (up to 50MB)
+    if file_size_mb > 50:
+        # File too large for Bot API and Pyrogram failed/unavailable
+        return False
+    
+    try:
+        with BytesIO(content) as file_buffer:
+            file_buffer.name = filename
+            await bot.send_document(
+                chat_id=chat_id,
+                document=file_buffer,
+                caption=caption,
+                reply_to_message_id=reply_to
+            )
+        return True
+    except Exception as e:
+        print(f"Standard document upload failed: {e}")
+        return False
+
+
 async def _tg_call_with_retry(fn, *args, retries: int = 4, base_delay: float = 1.0, **kwargs):
     """
     Best-effort retry wrapper for Telegram API calls.
@@ -3766,18 +3874,23 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 file_name = f"cards_{year}_{month}_{int(time.time())}.txt"
                 caption = f"📁 {len(cards):,} cards (Year-Month: {year}-{month})\n👤 Exported by: {username}"
                 
-                # Send file
+                # Send file - use smart sender for large files
                 try:
-                    with BytesIO(file_content.encode('utf-8')) as file_buffer:
-                        file_buffer.name = file_name
-                        
-                        await context.bot.send_document(
-                            chat_id=query.message.chat.id,
-                            document=file_buffer,
-                            caption=caption,
-                        )
+                    file_bytes = file_content.encode('utf-8')
+                    file_size_mb = len(file_bytes) / (1024 * 1024)
                     
-                    await query.answer(f"✅ Exported {len(cards)} cards", show_alert=True)
+                    success = await send_large_document(
+                        bot=context.bot,
+                        chat_id=query.message.chat.id,
+                        content=file_bytes,
+                        filename=file_name,
+                        caption=caption
+                    )
+                    
+                    if success:
+                        await query.answer(f"✅ Exported {len(cards)} cards ({file_size_mb:.1f}MB)", show_alert=True)
+                    else:
+                        await query.answer(f"⚠️ File too large ({file_size_mb:.1f}MB). Set API_ID/API_HASH for large files.", show_alert=True)
                 except Exception as e:
                     print(f"Export error: {e}")
                     await query.answer("❌ Error exporting file", show_alert=True)
@@ -3861,18 +3974,23 @@ async def clean_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file_name = f"{export_category_name}_{int(time.time())}.txt"
             caption = f"📁 {len(cards):,} cards with details ({export_category_name}: {identifier[:20]})\n👤 Exported by: {username}"
         
-        # Send file
+        # Send file - use smart sender for large files
         try:
-            with BytesIO(file_content.encode('utf-8')) as file_buffer:
-                file_buffer.name = file_name
-                
-                await context.bot.send_document(
-                    chat_id=query.message.chat.id,
-                    document=file_buffer,
-                    caption=caption,
-                )
+            file_bytes = file_content.encode('utf-8')
+            file_size_mb = len(file_bytes) / (1024 * 1024)
             
-            await query.answer(f"✅ Exported {len(cards)} cards", show_alert=True)
+            success = await send_large_document(
+                bot=context.bot,
+                chat_id=query.message.chat.id,
+                content=file_bytes,
+                filename=file_name,
+                caption=caption
+            )
+            
+            if success:
+                await query.answer(f"✅ Exported {len(cards)} cards ({file_size_mb:.1f}MB)", show_alert=True)
+            else:
+                await query.answer(f"⚠️ File too large ({file_size_mb:.1f}MB). Set API_ID/API_HASH for large files.", show_alert=True)
         except Exception as e:
             print(f"Export error: {e}")
             await query.answer("❌ Error exporting file", show_alert=True)
@@ -6632,7 +6750,7 @@ async def sort_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
 async def send_sort_results_file(user_id, unique_id, context, original_message, chat_id):
-    """Send sorted results as a text file (CLEAN FORMAT - ONLY CARDS)"""
+    """Send sorted results as a text file (CLEAN FORMAT - ONLY CARDS) - supports large files via Pyrogram"""
     if unique_id not in context.user_data:
         await original_message.edit_text("❌ Results expired. Please run /sort again.")
         return
@@ -6647,21 +6765,35 @@ async def send_sort_results_file(user_id, unique_id, context, original_message, 
     cards = results['cards']
     total = results['total']
     
-    # FIXED: Create file content with ONLY CARDS (no extra text)
+    # Create file content with ONLY CARDS (no extra text)
     file_content = "\n".join(cards)
+    file_bytes = file_content.encode('utf-8')
+    file_size_mb = len(file_bytes) / (1024 * 1024)
     
-    # Send as file
+    filename = f"sorted_cards_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    caption = f"📁 Sorted Cards ({total:,} cards)\n👤 Processed by: {results['username']}"
+    
+    # Send as file - use smart sender for large files
     try:
-        with BytesIO(file_content.encode('utf-8')) as file_buffer:
-            file_buffer.name = f"sorted_cards_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            
-            await context.bot.send_document(
-                chat_id=chat_id,
-                document=file_buffer,
-                caption=f"📁 Sorted Cards ({total:,} cards)\n👤 Processed by: {results['username']}",
-            )
+        if file_size_mb > 45:
+            await original_message.edit_text(f"📤 Uploading large file ({file_size_mb:.1f}MB)...")
         
-        await original_message.edit_text(f"✅ Sent as file with {total:,} cards (clean format).")
+        success = await send_large_document(
+            bot=context.bot,
+            chat_id=chat_id,
+            content=file_bytes,
+            filename=filename,
+            caption=caption
+        )
+        
+        if success:
+            await original_message.edit_text(f"✅ Sent as file with {total:,} cards ({file_size_mb:.1f}MB).")
+        else:
+            # File too large and Pyrogram failed
+            await original_message.edit_text(
+                f"⚠️ File too large ({file_size_mb:.1f}MB) for direct upload.\n\n"
+                "💡 Try splitting the data into smaller chunks, or ensure API_ID and API_HASH are set for large file support."
+            )
     except Exception as e:
         print(f"Error sending file: {e}")
         await original_message.edit_text(f"❌ Error sending file: {str(e)[:100]}")
@@ -7284,17 +7416,25 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def back_btn():
         return InlineKeyboardButton("⬅️ Back", callback_data=f"f_back:{session_id}")
     
-    # Download all
+    # Download all - use smart sender for large files
     if action == "f_dl":
         cards = organized['all']
         content = "\n".join([c['formatted'] for c in cards])
+        file_bytes = content.encode('utf-8')
+        file_size_mb = len(file_bytes) / (1024 * 1024)
         filename = f"filtered_{len(cards)}_{int(time.time())}.txt"
+        caption = f"📥 {len(cards):,} cards ({file_size_mb:.1f}MB)\n👤 {session['user']}"
         
-        await query.message.reply_document(
-            document=BytesIO(content.encode()),
+        success = await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=filename,
-            caption=f"📥 {len(cards):,} cards\n👤 {session['user']}"
+            caption=caption
         )
+        
+        if not success:
+            await query.answer(f"⚠️ File too large ({file_size_mb:.1f}MB). Set API_ID/API_HASH for large files.", show_alert=True)
         return
     
     # By BIN list
@@ -7320,7 +7460,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get specific BIN
+    # Get specific BIN - use smart sender for large files
     elif action == "f_getbin":
         bin_num = extra
         cards = organized['by_bin'].get(bin_num, [])
@@ -7330,11 +7470,14 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         content = "\n".join([c['formatted'] for c in cards])
+        file_bytes = content.encode('utf-8')
         info_str, details = get_bin_info(bin_num)
         flag = (details or {}).get('country_flag', '')
         
-        await query.message.reply_document(
-            document=BytesIO(content.encode()),
+        await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=f"bin_{bin_num}_{len(cards)}.txt",
             caption=f"🏦 BIN: {bin_num} {flag}\n📊 Cards: {len(cards)}\n💳 {info_str}"
         )
@@ -7376,11 +7519,14 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         content = "\n".join([c['formatted'] for c in cards])
+        file_bytes = content.encode('utf-8')
         month_names = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
         name = month_names[int(mm)] if int(mm) <= 12 else mm
         
-        await query.message.reply_document(
-            document=BytesIO(content.encode()),
+        await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=f"month_{mm}_{len(cards)}.txt",
             caption=f"📅 Month: {name}\n📊 Cards: {len(cards)}"
         )
@@ -7410,7 +7556,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get specific year
+    # Get specific year - use smart sender for large files
     elif action == "f_getyear":
         yy = extra
         cards = organized['by_year'].get(yy, [])
@@ -7420,9 +7566,12 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         content = "\n".join([c['formatted'] for c in cards])
+        file_bytes = content.encode('utf-8')
         
-        await query.message.reply_document(
-            document=BytesIO(content.encode()),
+        await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=f"year_20{yy}_{len(cards)}.txt",
             caption=f"📆 Year: 20{yy}\n📊 Cards: {len(cards)}"
         )
@@ -7455,7 +7604,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get specific brand
+    # Get specific brand - use smart sender for large files
     elif action == "f_getbrand":
         brand = extra
         cards_list = organized['by_brand'].get(brand, [])
@@ -7465,8 +7614,11 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         content = "\n".join([c['formatted'] for c in cards_list])
-        await query.message.reply_document(
-            document=BytesIO(content.encode()),
+        file_bytes = content.encode('utf-8')
+        await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=f"brand_{brand}_{len(cards_list)}.txt",
             caption=f"💳 Brand: {brand}\n📊 Cards: {len(cards_list)}"
         )
@@ -7499,7 +7651,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get specific type
+    # Get specific type - use smart sender for large files
     elif action == "f_gettype":
         card_type = extra
         cards_list = organized['by_type'].get(card_type, [])
@@ -7509,8 +7661,11 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         content = "\n".join([c['formatted'] for c in cards_list])
-        await query.message.reply_document(
-            document=BytesIO(content.encode()),
+        file_bytes = content.encode('utf-8')
+        await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=f"type_{card_type}_{len(cards_list)}.txt",
             caption=f"🔖 Type: {card_type}\n📊 Cards: {len(cards_list)}"
         )
@@ -7542,7 +7697,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get specific level
+    # Get specific level - use smart sender for large files
     elif action == "f_getlevel":
         level = extra
         cards_list = organized['by_level'].get(level, [])
@@ -7552,8 +7707,11 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         content = "\n".join([c['formatted'] for c in cards_list])
-        await query.message.reply_document(
-            document=BytesIO(content.encode()),
+        file_bytes = content.encode('utf-8')
+        await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=f"level_{level}_{len(cards_list)}.txt",
             caption=f"⭐ Level: {level}\n📊 Cards: {len(cards_list)}"
         )
@@ -7587,7 +7745,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get specific country
+    # Get specific country - use smart sender for large files
     elif action == "f_getcountry":
         country_short = extra.replace("_", " ") if extra else ""
         # Find matching country
@@ -7604,8 +7762,11 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         content = "\n".join([c['formatted'] for c in cards_list])
-        await query.message.reply_document(
-            document=BytesIO(content.encode()),
+        file_bytes = content.encode('utf-8')
+        await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=f"country_{len(cards_list)}.txt",
             caption=f"🌍 Country: {country_full}\n📊 Cards: {len(cards_list)}"
         )
@@ -7673,7 +7834,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get specific year+month
+    # Get specific year+month - use smart sender for large files
     elif action == "f_getym":
         ym_key = extra  # Format: "27_05"
         cards_list = organized['by_year_month'].get(ym_key, [])
@@ -7687,8 +7848,11 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         month_name = month_names[int(mm)] if int(mm) <= 12 else mm
         
         content = "\n".join([c['formatted'] for c in cards_list])
-        await query.message.reply_document(
-            document=BytesIO(content.encode()),
+        file_bytes = content.encode('utf-8')
+        await send_large_document(
+            bot=query.message.get_bot(),
+            chat_id=query.message.chat.id,
+            content=file_bytes,
             filename=f"20{yy}_{month_name}_{len(cards_list)}.txt",
             caption=f"📅 Period: {month_name} 20{yy}\n📊 Cards: {len(cards_list)}"
         )
