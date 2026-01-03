@@ -46,8 +46,95 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-# NOTE: Pyrogram/TgCrypto support was removed to avoid runtime warnings and
-# keep dependencies minimal. File downloads use the standard Bot API.
+# ==== 1.05 Pyrogram for Large File Uploads (500MB+) ====
+# Pyrogram uses MTProto API which supports up to 2GB file uploads
+# To enable: set API_ID and API_HASH from https://my.telegram.org
+_pyrogram_client = None
+_pyrogram_available = False
+
+try:
+    from pyrogram import Client as PyroClient
+    from pyrogram.errors import FloodWait
+    _pyrogram_available = True
+except ImportError:
+    _pyrogram_available = False
+    PyroClient = None
+
+def _get_pyrogram_client():
+    """Get or create Pyrogram client for large file uploads"""
+    global _pyrogram_client
+    
+    if not _pyrogram_available:
+        return None
+    
+    api_id = os.environ.get("API_ID", "").strip()
+    api_hash = os.environ.get("API_HASH", "").strip()
+    bot_token = os.environ.get("BOT_TOKEN", "").strip()
+    
+    if not api_id or not api_hash or not bot_token:
+        return None
+    
+    if _pyrogram_client is None:
+        try:
+            _pyrogram_client = PyroClient(
+                "jork_uploader",
+                api_id=int(api_id),
+                api_hash=api_hash,
+                bot_token=bot_token,
+                workdir="/tmp",
+                no_updates=True,  # We don't need updates, just uploading
+                in_memory=True
+            )
+        except Exception as e:
+            print(f"⚠️ Failed to create Pyrogram client: {e}")
+            return None
+    
+    return _pyrogram_client
+
+async def _upload_large_file_pyrogram(chat_id: int, file_path: str, caption: str, reply_to: int = None) -> bool:
+    """
+    Upload large file using Pyrogram (supports up to 2GB).
+    Returns True if successful, False otherwise.
+    """
+    client = _get_pyrogram_client()
+    if not client:
+        return False
+    
+    try:
+        # Start client if not running
+        if not client.is_connected:
+            await client.start()
+        
+        # Upload as video
+        await client.send_video(
+            chat_id=chat_id,
+            video=file_path,
+            caption=caption,
+            parse_mode="html",
+            reply_to_message_id=reply_to,
+            supports_streaming=True,
+            progress=None  # Could add progress callback
+        )
+        return True
+        
+    except FloodWait as e:
+        # Telegram rate limit - wait and retry
+        await asyncio.sleep(e.value + 1)
+        try:
+            await client.send_video(
+                chat_id=chat_id,
+                video=file_path,
+                caption=caption,
+                parse_mode="html",
+                reply_to_message_id=reply_to,
+                supports_streaming=True
+            )
+            return True
+        except:
+            return False
+    except Exception as e:
+        print(f"Pyrogram upload error: {e}")
+        return False
 
 
 async def _tg_call_with_retry(fn, *args, retries: int = 4, base_delay: float = 1.0, **kwargs):
@@ -8035,23 +8122,86 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_title = "video"
         filename = f"{safe_title}.mp4"
         
-        # Telegram Bot API limit is 50MB for uploads
+        # Write to temp file for upload
+        temp_path = f"/tmp/jork_{uid}_{int(time.time())}.mp4"
+        
+        # For files > 50MB, try Pyrogram (MTProto) which supports up to 2GB
         if file_size_mb > 50:
-            # File too large for Telegram - send thumbnail with download link
+            await wait_msg.edit_text(
+                f"📤 Uploading large file ({file_size_mb:.1f}MB)...\n\n"
+                f"<i>Using MTProto for large file upload...</i>",
+                parse_mode="HTML"
+            )
+            
+            # Write to temp file
+            try:
+                with open(temp_path, 'wb') as f:
+                    f.write(video_bytes)
+                del video_bytes
+                gc.collect()
+            except Exception as e:
+                await wait_msg.edit_text(f"❌ Failed to save video: {str(e)[:50]}")
+                return
+            
+            # Try Pyrogram upload
+            pyrogram_caption = (
+                f"<b>{title_safe}</b>\n\n"
+                f"🎞 Quality: <b>{quality}</b>\n"
+                f"📦 Size: <b>{file_size_mb:.1f}MB</b>\n\n"
+                f"⬇️ <a href='{download_url}'>Manual Download</a>"
+            )
+            
+            pyrogram_success = False
+            if _pyrogram_available:
+                try:
+                    await wait_msg.edit_text(
+                        f"📤 Uploading {file_size_mb:.1f}MB via MTProto...\n\n"
+                        f"<i>This may take several minutes...</i>",
+                        parse_mode="HTML"
+                    )
+                    pyrogram_success = await _upload_large_file_pyrogram(
+                        chat_id=update.effective_chat.id,
+                        file_path=temp_path,
+                        caption=pyrogram_caption,
+                        reply_to=update.message.message_id
+                    )
+                except Exception as e:
+                    print(f"Pyrogram upload failed: {e}")
+            
+            # Clean up temp file
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+            
+            if pyrogram_success:
+                try:
+                    await wait_msg.delete()
+                except:
+                    pass
+                gc.collect()
+                return
+            
+            # Pyrogram failed or not available - send download link
             try:
                 await wait_msg.delete()
             except:
                 pass
             
+            # Check if Pyrogram is configured
+            if not _pyrogram_available:
+                no_pyro_msg = "\n\n💡 <i>To enable large uploads, install pyrogram and set API_ID + API_HASH</i>"
+            else:
+                no_pyro_msg = ""
+            
             large_file_caption = (
                 f"<b>{title_safe}</b>\n\n"
                 f"🎞 Quality: <b>{quality}</b>\n"
                 f"📦 Size: <b>{file_size_mb:.1f}MB</b>\n\n"
-                f"⚠️ <i>File too large for Telegram (max 50MB)</i>\n\n"
                 f"⬇️ <a href='{download_url}'>Click here to download</a>"
+                f"{no_pyro_msg}"
             )
             
-            # Send thumbnail with info
             if thumbnail:
                 try:
                     await update.message.reply_photo(
@@ -8074,20 +8224,15 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_to_message_id=update.message.message_id,
                     disable_web_page_preview=False
                 )
-            
-            del video_bytes
             gc.collect()
             return
         
-        # File is under 50MB - try to upload
+        # File is under 50MB - use standard Bot API
         await wait_msg.edit_text(
             f"📤 Uploading to Telegram ({file_size_mb:.1f}MB)...\n\n"
             f"<i>Please wait...</i>",
             parse_mode="HTML"
         )
-        
-        # Write to temp file for reliable upload
-        temp_path = f"/tmp/jork_{uid}_{int(time.time())}.mp4"
         try:
             with open(temp_path, 'wb') as f:
                 f.write(video_bytes)
