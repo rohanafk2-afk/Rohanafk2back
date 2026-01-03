@@ -372,6 +372,18 @@ async def send_large_document(bot, chat_id: int, content: bytes, filename: str, 
         return False
 
 
+async def _safe_edit_text(msg, text: str, **kwargs) -> bool:
+    """Safely edit message text, ignoring 'message not modified' errors"""
+    try:
+        await msg.edit_text(text, **kwargs)
+        return True
+    except Exception as e:
+        if "not modified" in str(e).lower():
+            return True  # Not an error, just same content
+        print(f"Edit message error: {e}")
+        return False
+
+
 async def _tg_call_with_retry(fn, *args, retries: int = 4, base_delay: float = 1.0, **kwargs):
     """
     Best-effort retry wrapper for Telegram API calls.
@@ -7467,11 +7479,11 @@ async def filter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     file = await context.bot.get_file(replied.document.file_id)
                     file_bytes = await file.download_as_bytearray()
                     data_text = file_bytes.decode('utf-8', errors='ignore')
-                
-                if not data_text or not data_text.strip():
-                    await msg.edit_text("❌ File is empty or could not be read.")
-                    return
-                await msg.edit_text(f"🔍 Processing {file_size_mb:.1f}MB...")
+                    
+                    if not data_text or not data_text.strip():
+                        await msg.edit_text("❌ File is empty or could not be read.")
+                        return
+                    await _safe_edit_text(msg, f"🔍 Processing {file_size_mb:.1f}MB...")
             except Exception as e:
                 error_msg = str(e)
                 if "too big" in error_msg.lower():
