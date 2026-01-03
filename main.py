@@ -8022,7 +8022,7 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_size_mb = file_size / (1024 * 1024)
         await wait_msg.edit_text(
             f"📤 Uploading to Telegram ({file_size_mb:.1f}MB)...\n\n"
-            f"<i>Please wait...</i>",
+            f"<i>This may take a few minutes for large files...</i>",
             parse_mode="HTML"
         )
         
@@ -8040,51 +8040,85 @@ async def jork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_title = "video"
         filename = f"{safe_title}.mp4"
         
+        # Write to temp file for reliable upload (BytesIO can timeout on large files)
+        temp_path = f"/tmp/jork_{uid}_{int(time.time())}.mp4"
         try:
-            await wait_msg.delete()
-        except:
-            pass
-        
-        # Send as document first (best quality, supports larger files)
-        upload_success = False
-        try:
-            await update.message.reply_document(
-                document=BytesIO(video_bytes),
-                filename=filename,
-                caption=video_caption,
-                parse_mode="HTML",
-                reply_to_message_id=update.message.message_id
-            )
-            upload_success = True
-        except Exception as doc_err:
-            # Try as video if document fails
+            with open(temp_path, 'wb') as f:
+                f.write(video_bytes)
+            
+            # Free memory before upload
+            del video_bytes
+            gc.collect()
+            
             try:
-                await update.message.reply_video(
-                    video=BytesIO(video_bytes),
-                    filename=filename,
-                    caption=video_caption,
+                await wait_msg.delete()
+            except:
+                pass
+            
+            # Send as document (most reliable for large files)
+            upload_success = False
+            last_error = ""
+            
+            # Try document upload with retries
+            for attempt in range(3):
+                try:
+                    with open(temp_path, 'rb') as video_file:
+                        await update.message.reply_document(
+                            document=video_file,
+                            filename=filename,
+                            caption=video_caption,
+                            parse_mode="HTML",
+                            reply_to_message_id=update.message.message_id,
+                            read_timeout=300,  # 5 min read timeout
+                            write_timeout=300,  # 5 min write timeout
+                            connect_timeout=60
+                        )
+                    upload_success = True
+                    break
+                except Exception as e:
+                    last_error = str(e)
+                    if attempt < 2:
+                        await asyncio.sleep(2)  # Wait before retry
+                    continue
+            
+            # If document fails, try as video
+            if not upload_success:
+                try:
+                    with open(temp_path, 'rb') as video_file:
+                        await update.message.reply_video(
+                            video=video_file,
+                            filename=filename,
+                            caption=video_caption,
+                            parse_mode="HTML",
+                            reply_to_message_id=update.message.message_id,
+                            supports_streaming=True,
+                            read_timeout=300,
+                            write_timeout=300,
+                            connect_timeout=60
+                        )
+                    upload_success = True
+                except Exception as video_err:
+                    last_error = str(video_err)
+            
+            if not upload_success:
+                # Last resort: send link only
+                await update.message.reply_text(
+                    f"{video_caption}\n\n"
+                    f"⚠️ Upload failed: {last_error[:50]}\n"
+                    f"Please use the manual download link above.",
                     parse_mode="HTML",
                     reply_to_message_id=update.message.message_id,
-                    supports_streaming=True
+                    disable_web_page_preview=False
                 )
-                upload_success = True
-            except Exception as video_err:
+        
+        finally:
+            # Clean up temp file
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except:
                 pass
-        
-        if not upload_success:
-            # Last resort: send thumbnail with link
-            await update.message.reply_text(
-                f"{video_caption}\n\n"
-                f"⚠️ Failed to upload video to Telegram\n"
-                f"Please use the manual download link above.",
-                parse_mode="HTML",
-                reply_to_message_id=update.message.message_id,
-                disable_web_page_preview=False
-            )
-        
-        # Clean up
-        del video_bytes
-        gc.collect()
+            gc.collect()
         
     except RuntimeError as e:
         try:
