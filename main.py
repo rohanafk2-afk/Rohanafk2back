@@ -8302,7 +8302,7 @@ def _fetch_video_info(video_url: str) -> dict:
     
     # Get session tokens
     try:
-        session.get(_JORK_BASE_URL + "/", timeout=20)
+        session.get(_JORK_BASE_URL + "/", timeout=60)
     except Exception as e:
         raise RuntimeError(f"Failed to connect to server: {str(e)[:50]}")
     
