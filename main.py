@@ -8325,7 +8325,7 @@ def _fetch_video_info(video_url: str) -> dict:
     }
     
     try:
-        r = session.post(_JORK_API_URL, headers=headers, json=payload, timeout=60)
+        r = session.post(_JORK_API_URL, headers=headers, json=payload, timeout=600)
         r.raise_for_status()
     except requests.exceptions.Timeout:
         raise RuntimeError("Request timed out")
