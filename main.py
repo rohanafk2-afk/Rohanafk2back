@@ -5140,7 +5140,7 @@ async def kill_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==== 6. /kd Command (VISA Killer #2) ==== #
 def run_kd_process(card_input, update_dict):
     """VISA Killer #2 - FINAL STABLE VERSION"""
-    import random, traceback, time, gc
+    import random, traceback, time
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
@@ -5151,18 +5151,29 @@ def run_kd_process(card_input, update_dict):
 
     try:
         driver = create_killer_driver()
-        wait = WebDriverWait(driver, 6)
+        wait = WebDriverWait(driver, 8)
 
         driver.get("https://src.visa.com/login")
 
         # ================================
-        # ✅ COOKIE FIX (IMPORTANT)
+        # ✅ COOKIE FIX (STRONG + FALLBACK)
         # ================================
         try:
-            driver.execute_script("arguments[0].click();",
-                wait.until(EC.presence_of_element_located((By.XPATH, "//button[contains(.,'Accept')]"))))
+            accept_btn = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'Accept')]"))
+            )
+            driver.execute_script("arguments[0].click();", accept_btn)
+            time.sleep(1)
         except:
-            pass
+            try:
+                driver.execute_script("""
+                document.querySelectorAll('button').forEach(btn => {
+                    if (btn.innerText.includes('Accept')) btn.click();
+                });
+                """)
+                time.sleep(1)
+            except:
+                pass
 
         # ================================
         # STEP 1 — LOGIN FLOW
@@ -5230,7 +5241,7 @@ def run_kd_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-        # ✅ FINAL BUTTON (NEW FLOW)
+        # Add Card (NEW FLOW)
         driver.execute_script("arguments[0].click();",
             wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']"))))
 
