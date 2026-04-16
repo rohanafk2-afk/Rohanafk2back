@@ -5165,10 +5165,7 @@ def run_kd_process(card_input, update_dict):
         
         wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
         driver.execute_script("arguments[0].click();", wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Continue']]"))))
-        phone_input = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
-driver.execute_script("arguments[0].value = '';", phone_input)
-phone_input.clear()
-phone_input.send_keys("202" + "".join(random.choices("0123456789", k=7)))
+        phone_input = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number"))); driver.execute_script("arguments[0].value='';", phone_input); phone_input.clear(); phone_input.send_keys("202" + "".join(random.choices("0123456789", k=7)))
         driver.execute_script("arguments[0].click();", wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='checkbox' and contains(@class,'v-checkbox')]"))))
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="next-button"]'))).click()
 
