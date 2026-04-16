@@ -6787,7 +6787,25 @@ async def bt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text(f"💳 `{card_str}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         Process(target=run_bt_check, args=(card_str, update.effective_chat.id, msg.message_id), daemon=True).start()
 
-# ==== 10. /chk Command (FINAL - WITH SS + STABLE) ==== #
+# ==== 10. /chk Command (FINAL - FILE BASED + SS + STABLE) ==== #
+
+def get_chk_accounts():
+    accounts = []
+    try:
+        with open("chk_accounts.txt", "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if ":" in line:
+                    email, password = line.split(":", 1)
+                elif "|" in line:
+                    email, password = line.split("|", 1)
+                else:
+                    continue
+                accounts.append((email.strip(), password.strip()))
+    except Exception as e:
+        print("Failed to read chk_accounts.txt:", e)
+    return accounts
+
 
 def run_chk_process(card_input):
     import random, time, traceback
@@ -6822,12 +6840,11 @@ def run_chk_process(card_input):
 
         time.sleep(2)
 
-        # 🔥 FORCE REDIRECT
+        # 🔥 FORCE REDIRECT AFTER LOGIN
         driver.get(url)
 
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
-        # ===== WAIT BUTTON =====
         add_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
 
         cc, mm, yy, cvv = killer_split_card(card_input)
@@ -6881,7 +6898,7 @@ def run_chk_process(card_input):
     except Exception:
         return {
             "error": traceback.format_exc(),
-            "driver": driver   # 🔥 IMPORTANT: pass driver for screenshot
+            "driver": driver
         }
 
     finally:
@@ -6953,7 +6970,7 @@ async def chk_cmd(update, context):
         await msg.edit_text("❌ Request timeout, try again.")
 
         try:
-            killer_admin_report("chk", trace, driver)  # 📸 screenshot sent here
+            killer_admin_report("chk", trace, driver)  # 📸 screenshot sent
         except:
             pass
 
