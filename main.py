@@ -1386,80 +1386,132 @@ def format_timedelta(td):
     mins, secs = divmod(rem, 60)
     return f"{hrs}h {mins}m {secs}s"
 
-# ==== 4.1 BIN Database & Lookup Functions (NO DB3 / CLEAN VERSION) ====
-
+# ==== 4.1 BIN Database & Lookup Functions (local cache) ====
 BIN_DB_1 = "bin_database_1.json"
 BIN_DB_2 = "bin_database_2.json"
-
+BIN_DB_3 = "bin_database_3.json"  # Local cache for API results
 bin_cache = {}
 
-
 def load_bin_databases():
-    """Load BIN databases from DB1 + DB2 only (NO DB3)."""
+    """Load BIN databases from local files."""
     global bin_cache
-
+    
     if bin_cache:
         return bin_cache
-
+    
     bin_cache = {}
+    
+    # Load cached API BINs first (DB3)
+    if os.path.exists(BIN_DB_3):
+        try:
+            with open(BIN_DB_3, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-    # =========================
-    # 🔹 Load DB1
-    # =========================
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    if key and isinstance(value, dict):
+                        bin_cache[str(key)[:6].zfill(6)] = value
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and item.get("bin"):
+                        bin_cache[str(item["bin"])[:6].zfill(6)] = item
+
+            print(f"✅ Loaded cached BINs from {BIN_DB_3}")
+        except Exception as e:
+            print(f"❌ Error loading {BIN_DB_3}: {e}")
+    
+    # Load first database
     if os.path.exists(BIN_DB_1):
         try:
             with open(BIN_DB_1, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-
                 if isinstance(data, dict):
                     for key, value in data.items():
                         if isinstance(value, dict) and 'data' in value:
-                            bin_cache[key] = value['data']
+                            bin_data = value['data']
+                            bin_cache[key] = bin_data
                         else:
                             bin_cache[key] = value
-
                 elif isinstance(data, list):
                     for item in data:
-                        if isinstance(item, dict) and item.get("bin"):
-                            bin_cache[str(item["bin"])[:6].zfill(6)] = item
-
+                        if 'bin' in item:
+                            bin_cache[item['bin']] = item
             print(f"✅ Loaded BINs from {BIN_DB_1}")
         except Exception as e:
             print(f"❌ Error loading {BIN_DB_1}: {e}")
-
-    # =========================
-    # 🔹 Load DB2
-    # =========================
+    
+    # Load second database
     if os.path.exists(BIN_DB_2):
         try:
             with open(BIN_DB_2, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-
                 if isinstance(data, dict):
                     for key, value in data.items():
                         if key not in bin_cache:
                             if isinstance(value, dict) and 'data' in value:
-                                bin_cache[key] = value['data']
+                                bin_data = value['data']
+                                bin_cache[key] = bin_data
                             else:
                                 bin_cache[key] = value
-
                 elif isinstance(data, list):
                     for item in data:
-                        if isinstance(item, dict) and item.get("bin"):
-                            bin_key = str(item["bin"])[:6].zfill(6)
-                            if bin_key not in bin_cache:
-                                bin_cache[bin_key] = item
-
+                        if 'bin' in item and item['bin'] not in bin_cache:
+                            bin_cache[item['bin']] = item
             print(f"✅ Loaded additional BINs from {BIN_DB_2}")
         except Exception as e:
             print(f"❌ Error loading {BIN_DB_2}: {e}")
-
+    
     return bin_cache
 
+def save_bin_to_local_cache(bin_data: dict) -> None:
+    """Persist BIN data to local cache file (DB3)."""
+    try:
+        bin_num = str(bin_data.get("bin", ""))[:6].zfill(6)
+        if not bin_num or not bin_num.isdigit() or len(bin_num) != 6:
+            return
+
+        payload = {
+            "bin": bin_num,
+            "brand": (bin_data.get("brand") or "Unknown").upper(),
+            "type": (bin_data.get("type") or "Unknown").upper(),
+            "country": bin_data.get("country") or "Unknown",
+            "country_flag": bin_data.get("country_flag", "") or "",
+            "country_code": bin_data.get("country_code", "") or "",
+            "bank": bin_data.get("bank") or "Unknown",
+            "level": bin_data.get("level", "") or "",
+            "source": bin_data.get("source", "api") or "api",
+            "updated_at": datetime.now().isoformat(),
+        }
+
+        # Keep in-memory cache up to date
+        try:
+            bin_cache[bin_num] = payload
+        except Exception:
+            pass
+
+        existing = {}
+        if os.path.exists(BIN_DB_3):
+            try:
+                with open(BIN_DB_3, "r", encoding="utf-8") as f:
+                    existing = json.load(f) or {}
+            except Exception:
+                existing = {}
+
+        if not isinstance(existing, dict):
+            existing = {}
+
+        existing[bin_num] = payload
+
+        tmp_path = f"{BIN_DB_3}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f)
+        os.replace(tmp_path, BIN_DB_3)
+    except Exception as e:
+        print(f"❌ Error saving BIN cache: {e}")
 
 @lru_cache(maxsize=5000)
 def _cached_bin_api_lookup(bin_str):
-    """API lookup (memory cached only, NO FILE SAVE)"""
+    """Cached API lookup for BINs not in local database"""
     try:
         session = get_http_session()
         res = session.get(f"https://bins.antipublic.cc/bins/{bin_str}", timeout=3)
@@ -1469,99 +1521,141 @@ def _cached_bin_api_lookup(bin_str):
         pass
     return None
 
-
 def get_bin_info(bin_number):
-    """Get BIN info from DB1/DB2 or API + ALWAYS SHOW LEVEL"""
+    """Get BIN info from cache or API with country flag (optimized)"""
     try:
+        # Ensure bin_number is 6 digits
         bin_str = str(bin_number)[:6].zfill(6)
-
-        # =========================
-        # 🔹 1. LOCAL DATABASE
-        # =========================
+        
+        # Check cache first
         bin_cache = load_bin_databases()
-
         if bin_str in bin_cache:
             data = bin_cache[bin_str]
-
-            brand = (data.get("brand") or data.get("scheme") or "UNKNOWN").upper()
-            type_ = (data.get("type") or "UNKNOWN").upper()
-            level = (data.get("level") or data.get("card_level") or "UNKNOWN").upper()
-            country = data.get("country_name") or data.get("country") or "UNKNOWN"
-            country_code = data.get("country_code") or data.get("country") or ""
-            bank = data.get("bank") or data.get("bank_name") or "UNKNOWN"
-            flag = data.get("country_flag", "")
-
-            # Generate flag if missing
-            if not flag and country_code and len(country_code) == 2:
-                try:
-                    flag = ''.join(chr(ord(c) + 127397) for c in country_code.upper())
-                except:
-                    flag = ""
-
-            # ✅ ALWAYS INCLUDE LEVEL
-            info = f"{brand} • {type_} • {level} • {country} • {bank}"
-
-            return info, {
+            
+            # Get country flag from database
+            country_flag = data.get("country_flag", "")
+            if not country_flag and 'country' in data:
+                # Try to generate flag from country code
+                country_code = data.get('country', '').upper()
+                if len(country_code) == 2:
+                    # Convert country code to flag emoji
+                    try:
+                        flag_emoji = ''.join(chr(ord(c) + 127397) for c in country_code)
+                        country_flag = flag_emoji
+                    except:
+                        country_flag = ""
+            
+            # Format the response similar to API
+            brand = data.get("brand", data.get("scheme", "Unknown")).upper()
+            type_ = data.get("type", "Unknown").upper()
+            country = data.get("country_name", data.get("country", "Unknown"))
+            country_code = data.get("country_code", data.get("country", ""))
+            bank = data.get("bank", data.get("bank_name", "Unknown"))
+            level = data.get("level", data.get("card_level", ""))
+            
+            # Build info string
+            info_parts = [brand]
+            if type_ and type_ != "UNKNOWN": 
+                info_parts.append(type_)
+            if country and country != "Unknown":
+                info_parts.append(country)
+            if level and level != "":
+                info_parts.append(level)
+            if bank and bank != "Unknown":
+                info_parts.append(bank)
+                
+            return " • ".join(info_parts), {
                 "bin": bin_str,
                 "brand": brand,
                 "type": type_,
-                "level": level,
                 "country": country,
-                "country_flag": flag,
+                "country_flag": country_flag,
                 "country_code": country_code,
                 "bank": bank,
+                "level": level,
                 "source": "database"
             }
-
-        # =========================
-        # 🔹 2. API LOOKUP
-        # =========================
+        
+        # If not in database, use API (with caching)
         data = _cached_bin_api_lookup(bin_str)
         if data:
-            brand = (data.get("brand") or "UNKNOWN").upper()
-            type_ = (data.get("type") or "UNKNOWN").upper()
-            level = (data.get("level") or "UNKNOWN").upper()
-            country = data.get("country_name") or "UNKNOWN"
-            country_code = data.get("country") or ""
-            bank = data.get("bank") or "UNKNOWN"
-
-            flag = data.get("country_flag", "")
-            if not flag and country_code and len(country_code) == 2:
+            brand = data.get("brand", "Unknown").upper()
+            type_ = data.get("type", "Unknown").upper()
+            country = data.get("country_name", "Unknown")
+            country_code = data.get("country", "")
+            
+            # Get country flag for API response
+            country_flag = ""
+            if country_code and len(country_code) == 2:
                 try:
-                    flag = ''.join(chr(ord(c) + 127397) for c in country_code.upper())
+                    flag_emoji = ''.join(chr(ord(c) + 127397) for c in country_code.upper())
+                    country_flag = flag_emoji
                 except:
-                    flag = ""
-
-            # ✅ ALWAYS INCLUDE LEVEL
-            info = f"{brand} • {type_} • {level} • {country} • {bank}"
-
-            return info, {
+                    country_flag = ""
+            
+            bank = data.get("bank", "Unknown")
+            level = data.get("level", "")
+            
+            # Cache the API result locally
+            bin_cache[bin_str] = {
+                "brand": brand,
+                "type": type_,
+                "country": country,
+                "country_flag": country_flag,
+                "country_code": country_code,
+                "bank": bank,
+                "level": level,
+                "source": "api"
+            }
+            
+            # Persist to local cache
+            bin_data = {
                 "bin": bin_str,
                 "brand": brand,
                 "type": type_,
-                "level": level,
                 "country": country,
-                "country_flag": flag,
+                "country_flag": country_flag,
                 "country_code": country_code,
                 "bank": bank,
+                "level": level,
                 "source": "api"
             }
-
+            save_bin_to_local_cache(bin_data)
+            
+            # Build info string
+            info_parts = [brand]
+            if type_ and type_ != "UNKNOWN": 
+                info_parts.append(type_)
+            if country and country != "Unknown":
+                info_parts.append(country)
+            if level and level != "":
+                info_parts.append(level)
+            if bank and bank != "Unknown":
+                info_parts.append(bank)
+                
+            return " • ".join(info_parts), {
+                "bin": bin_str,
+                "brand": brand,
+                "type": type_,
+                "country": country,
+                "country_flag": country_flag,
+                "country_code": country_code,
+                "bank": bank,
+                "level": level,
+                "source": "api"
+            }
     except Exception as e:
-        print(f"BIN lookup error: {e}")
-
-    # =========================
-    # 🔻 FALLBACK
-    # =========================
-    return "UNKNOWN • UNKNOWN • UNKNOWN • UNKNOWN • UNKNOWN", {
+        print(f"BIN lookup error for {bin_number}: {e}")
+    
+    return "Unavailable", {
         "bin": str(bin_number)[:6],
-        "brand": "UNKNOWN",
-        "type": "UNKNOWN",
-        "level": "UNKNOWN",
-        "country": "UNKNOWN",
+        "brand": "Unknown",
+        "type": "Unknown",
+        "country": "Unknown",
         "country_flag": "",
         "country_code": "",
-        "bank": "UNKNOWN",
+        "bank": "Unknown",
+        "level": "",
         "source": "error"
     }
 
@@ -3275,7 +3369,7 @@ async def bin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # FIXED: Format with clickable BIN number using monospace
         formatted_info = f"*BIN:* `{bin_}`\n"
-        formatted_info += f"*Info:* {brand} - {type_}\n"
+        fformatted_info += f"*Info:* {' • '.join(filter(None, [brand, type_, details.get('level','')]))}\n"
         formatted_info += f"*Bank:* {bank}\n"
         formatted_info += f"*Country:* {country_flag} {country}\n"
         
