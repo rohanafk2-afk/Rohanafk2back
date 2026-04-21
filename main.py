@@ -3369,7 +3369,7 @@ async def bin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # FIXED: Format with clickable BIN number using monospace
         formatted_info = f"*BIN:* `{bin_}`\n"
-        fformatted_info += f"*Info:* {' • '.join(filter(None, [brand, type_, details.get('level','')]))}\n"
+        formatted_info += f"*Info:* {' • '.join(filter(None, [brand, type_, details.get('level','')]))}\n"
         formatted_info += f"*Bank:* {bank}\n"
         formatted_info += f"*Country:* {country_flag} {country}\n"
         
