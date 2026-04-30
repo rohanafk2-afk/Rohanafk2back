@@ -5750,18 +5750,20 @@ def run_dd_process(card_input, update_dict):
             pass
 
         # ================================
-        # STEP 1 — LOGIN (UPDATED FLOW)
+        # STEP 1 — LOGIN
         # ================================
         identity = killer_get_fake_identity()
 
-        wait.until(EC.visibility_of_element_located((By.ID, "email-input"))).send_keys(identity["email"])
+        email = wait.until(EC.presence_of_element_located((By.ID, "email-input")))
+        email.send_keys(identity["email"])
 
         fast_click(wait.until(EC.presence_of_element_located(
             (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
         )))
 
+        # checkbox
         fast_click(wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//input[@type='checkbox']")
+            (By.CSS_SELECTOR, "input.v-checkbox[type='checkbox']")
         )))
         time.sleep(0.4)
 
