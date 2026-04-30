@@ -5383,25 +5383,15 @@ def run_ko_process(card_input, update_dict):
             (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
         )))
 
-        # wait phone
-        phone = wait.until(EC.visibility_of_element_located((By.ID, "login-phone-input-number")))
-        driver.execute_script("arguments[0].value='';", phone)
-
-        # valid US phone
-        phone.send_keys(
-            random.choice(["201","202","203","205","206","207","208","209"]) +
-            random.choice(["201","202","303","404","505","606"]) +
-            "".join(random.choices("0123456789", k=4))
-        )
-
         # checkbox
         fast_click(wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//input[@type='checkbox']")
+            (By.CSS_SELECTOR, "input.v-checkbox[type='checkbox']")
         )))
+        time.sleep(0.4)
 
         # Next
         fast_click(wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//button[.//div[normalize-space()='Next']]")
+            (By.XPATH, "//button[.//div[normalize-space()='Next'] or .//span[normalize-space()='Next']]")
         )))
 
         # ================================
@@ -5415,8 +5405,6 @@ def run_ko_process(card_input, update_dict):
 
         wrong_cvv = killer_get_wrong_cvv(real_cvv)
 
-        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
-        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
         card_box = wait.until(EC.presence_of_element_located((By.ID, "card-input")))
         driver.execute_script("arguments[0].value='';", card_box)
@@ -5440,14 +5428,17 @@ def run_ko_process(card_input, update_dict):
         except:
             pass
 
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
         wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
         wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(identity["phone"])
 
         # Add card
         add_btn = wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//div[normalize-space()='Add card']")
+            (By.XPATH, "//button[contains(@class,'styles-module__UMLP4q__submit') and .//div[normalize-space()='Add card']]")
         ))
         fast_click(add_btn)
 
@@ -5581,22 +5572,14 @@ def run_zz_process(card_input, update_dict):
             (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
         )))
 
-        # quick verify next step
-        phone = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
-        driver.execute_script("arguments[0].value='';", phone)
-
-        phone.send_keys(
-            random.choice(["201","202","203","205","206","207"]) +
-            random.choice(["201","202","303","404"]) +
-            "".join(random.choices("0123456789", k=4))
-        )
-
+        # checkbox
         fast_click(wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//input[@type='checkbox']")
+            (By.CSS_SELECTOR, "input.v-checkbox[type='checkbox']")
         )))
+        time.sleep(0.4)
 
         fast_click(wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//button[.//div[normalize-space()='Next']]")
+            (By.XPATH, "//button[.//div[normalize-space()='Next'] or .//span[normalize-space()='Next']]")
         )))
 
         # ================================
@@ -5609,9 +5592,6 @@ def run_zz_process(card_input, update_dict):
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
 
         wrong_cvv = killer_get_wrong_cvv(real_cvv)
-
-        wait.until(EC.presence_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
-        wait.until(EC.presence_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
         card_box = wait.until(EC.presence_of_element_located((By.ID, "card-input")))
         driver.execute_script("arguments[0].value='';", card_box)
@@ -5637,14 +5617,17 @@ def run_zz_process(card_input, update_dict):
         except:
             pass
 
+        wait.until(EC.presence_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.presence_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
         wait.until(EC.presence_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
         wait.until(EC.presence_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
         wait.until(EC.presence_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.presence_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
+        wait.until(EC.presence_of_element_located((By.ID, "card-phone-input-number"))).send_keys(identity["phone"])
 
         # Add card
         add_btn = wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//div[normalize-space()='Add card']")
+            (By.XPATH, "//button[contains(@class,'styles-module__UMLP4q__submit') and .//div[normalize-space()='Add card']]")
         ))
         fast_click(add_btn)
 
@@ -5777,35 +5760,25 @@ def run_dd_process(card_input, update_dict):
             (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
         )))
 
-        phone = wait.until(EC.presence_of_element_located((By.ID, "login-phone-input-number")))
-        driver.execute_script("arguments[0].value='';", phone)
-
-        # ✅ valid US phone
-        phone.send_keys(
-            random.choice(["201","202","203","205","206","207"]) +
-            random.choice(["201","202","303","404"]) +
-            "".join(random.choices("0123456789", k=4))
-        )
-
         fast_click(wait.until(EC.presence_of_element_located(
             (By.XPATH, "//input[@type='checkbox']")
         )))
+        time.sleep(0.4)
 
         fast_click(wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//button[.//div[normalize-space()='Next']]")
+            (By.XPATH, "//button[.//div[normalize-space()='Next'] or .//span[normalize-space()='Next']]")
         )))
 
         # ================================
         # STEP 2 — CARD
         # ================================
+        wait.until(EC.presence_of_element_located((By.ID, "card-input")))
+
         cc, mm, yy, real_cvv = killer_split_card(card_input)
         bin_info, bin_flag = get_cached_bin_info(cc[:6])
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
 
         wrong_cvv = killer_get_wrong_cvv(real_cvv)
-
-        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
-        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
         card_box = wait.until(EC.presence_of_element_located((By.ID, "card-input")))
         driver.execute_script("arguments[0].value='';", card_box)
@@ -5829,14 +5802,17 @@ def run_dd_process(card_input, update_dict):
         except:
             pass
 
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
         wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
         wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(identity["phone"])
 
         # 🔥 NEW ADD CARD BUTTON
         add_btn = wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//div[normalize-space()='Add card']")
+            (By.XPATH, "//button[contains(@class,'styles-module__UMLP4q__submit') and .//div[normalize-space()='Add card']]")
         ))
         fast_click(add_btn)
 
