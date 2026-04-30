@@ -5177,34 +5177,29 @@ def run_kd_process(card_input, update_dict):
             pass
 
         # ================================
-        # STEP 1 — LOGIN (FINAL CLEAN)
+        # STEP 1 — LOGIN
         # ================================
         identity = killer_get_fake_identity()
 
-        # Email input
         email = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
         email.clear()
-    email.send_keys(identity["email"])
+        email.send_keys(identity["email"])
 
-    # Continue button
-    safe_click(wait.until(EC.element_to_be_clickable(
-       (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
-    )))
+        # Continue
+        safe_click(wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
+        )))
 
-# ================================
-# CHECKBOX
-# ================================
-checkbox = wait.until(EC.element_to_be_clickable(
-    (By.XPATH, "//input[@type='checkbox']")
-))
-safe_click(checkbox)
+        
 
-# ================================
-# NEXT BUTTON
-# ================================
-safe_click(wait.until(EC.element_to_be_clickable(
-    (By.XPATH, "//button[.//div[normalize-space()='Next']]")
-)))
+        # checkbox
+        checkbox = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='checkbox']")))
+        safe_click(checkbox)
+
+        # Next
+        safe_click(wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[.//div[normalize-space()='Next']]")
+        )))
 
         # ================================
         # STEP 2 — CARD
@@ -5249,7 +5244,7 @@ safe_click(wait.until(EC.element_to_be_clickable(
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
 
-
+        
 
         # Add card
         add_btn = wait.until(EC.element_to_be_clickable(
