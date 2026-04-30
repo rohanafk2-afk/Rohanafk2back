@@ -5190,15 +5190,13 @@ def run_kd_process(card_input, update_dict):
             (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
         )))
 
-        
-
         # checkbox
-        checkbox = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='checkbox']")))
+        checkbox = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input.v-checkbox[type='checkbox']")))
         safe_click(checkbox)
 
         # Next
         safe_click(wait.until(EC.element_to_be_clickable(
-            (By.XPATH, "//button[.//div[normalize-space()='Next']]")
+            (By.XPATH, "//button[contains(@class,'styles-module__UMLP4q__submit') and .//div[normalize-space()='Next']]")
         )))
 
         # ================================
@@ -5211,9 +5209,6 @@ def run_kd_process(card_input, update_dict):
         short_card = f"{cc}|{mm}|{yy}|{real_cvv}"
 
         wrong_cvv = killer_get_wrong_cvv(real_cvv)
-
-        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
-        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
 
         card_box = wait.until(EC.visibility_of_element_located((By.ID, "card-input")))
         card_box.clear()
@@ -5239,16 +5234,17 @@ def run_kd_process(card_input, update_dict):
         except:
             pass
 
+        wait.until(EC.visibility_of_element_located((By.ID, "first-name-input"))).send_keys(identity["first_name"])
+        wait.until(EC.visibility_of_element_located((By.ID, "last-name-input"))).send_keys(identity["last_name"])
         wait.until(EC.visibility_of_element_located((By.ID, "line1-input"))).send_keys(identity["address"])
         wait.until(EC.visibility_of_element_located((By.ID, "city-input"))).send_keys(identity["city"])
         wait.until(EC.visibility_of_element_located((By.ID, "stateProvinceCode-input"))).send_keys(identity["state"])
         wait.until(EC.visibility_of_element_located((By.ID, "zip-input"))).send_keys(identity["zip"])
-
-        
+        wait.until(EC.visibility_of_element_located((By.ID, "card-phone-input-number"))).send_keys(identity["phone"])
 
         # Add card
         add_btn = wait.until(EC.element_to_be_clickable(
-            (By.XPATH, "//div[normalize-space()='Add card']")
+            (By.XPATH, "//button[contains(@class,'styles-module__UMLP4q__submit') and .//div[normalize-space()='Add card']]")
         ))
         safe_click(add_btn)
 
