@@ -5193,11 +5193,13 @@ def run_kd_process(card_input, update_dict):
         # checkbox
         checkbox = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input.v-checkbox[type='checkbox']")))
         safe_click(checkbox)
+        time.sleep(0.4)
 
         # Next
-        safe_click(wait.until(EC.element_to_be_clickable(
-            (By.XPATH, "//button[contains(@class,'styles-module__UMLP4q__submit') and .//div[normalize-space()='Next']]")
-        )))
+        next_btn = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[.//div[normalize-space()='Next'] or .//span[normalize-space()='Next']]")
+        ))
+        safe_click(next_btn)
 
         # ================================
         # STEP 2 — CARD
