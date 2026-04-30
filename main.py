@@ -5190,16 +5190,7 @@ def run_kd_process(card_input, update_dict):
             (By.XPATH, "//button[.//div[normalize-space()='Continue']]")
         )))
 
-        # wait next field
-        phone = wait.until(EC.visibility_of_element_located((By.ID, "login-phone-input-number")))
-        driver.execute_script("arguments[0].value='';", phone)
-
-        # valid US phone
-        phone.send_keys(
-            random.choice(["201","202","203","205","206","207","208","209"]) +
-            random.choice(["201","202","303","404","505","606"]) +
-            "".join(random.choices("0123456789", k=4))
-        )
+        
 
         # checkbox
         checkbox = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='checkbox']")))
