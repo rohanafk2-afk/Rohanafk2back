@@ -2973,7 +2973,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /filter <data|file|URL> - Fast card filter\n"
         "• /clean <data|file|URL> - Advanced cleaner\n"
         "• /sort <data|file|URL> - Clean & sort cards\n"
-        "• /split [size] - Split large files (reply)\n"
+        "• /split [lines] - Split files by lines (reply)\n"
         "• /merge - Merge multiple files into one\n"
         "• /bin <bins/cards> - BIN lookup\n\n"
         "🌐 *Large Files (100-500MB):*\n"
@@ -3414,7 +3414,7 @@ async def cmds_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lock("/clean <data|file|URL> — Advanced cleaner", "clean"),
         lock("/sort <data|file|URL> — Clean & sort cards", "sort"),
         lock("/bin <bins/cards/mixed> — BIN lookup", "bin"),
-        "/split [size\\_mb] — Split large files (reply to file)",
+        "/split [lines] — Split files by lines (reply to file)",
         "/merge — Merge multiple files into one (sorted, clean)",
     ]))
 
@@ -8594,9 +8594,9 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==== 13.6 /split Command - Split Large Files into Parts ====
 async def split_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Split a large file into smaller parts that can be uploaded to Telegram.
-    Usage: Reply to a file with /split [size_mb]
-    Default split size: 15MB (safe for Telegram)
+    Split a file into smaller text parts by line count.
+    Usage: Reply to a text file with /split [lines]
+    Default split count: 500 lines
     """
     uid = update.effective_user.id
     
@@ -8605,93 +8605,96 @@ async def split_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✂️ *File Splitter*\n\n"
             "*Usage:*\n"
-            "1. Upload a large file to Telegram (up to 2GB)\n"
-            "2. Reply to it with `/split [size_mb]`\n\n"
+            "1. Upload a file to Telegram\n"
+            "2. Reply to it with `/split [lines]`\n\n"
             "*Parameters:*\n"
-            "• `size_mb` - Size of each part in MB (default: 15)\n\n"
+            "• `lines` - Number of lines per part (default: 500)\n\n"
             "*Examples:*\n"
-            "• `/split` - Split into 15MB parts\n"
-            "• `/split 10` - Split into 10MB parts\n"
-            "• `/split 5` - Split into 5MB parts\n\n"
-            "*Note:* This is useful when you have files >20MB but want to use\n"
-            "Telegram file upload with /sort, /clean, /filter commands.",
+            "• `/split` - Split into 500-line parts\n"
+            "• `/split 300` - Split into 300-line parts\n"
+            "• `/split 1000` - Split into 1000-line parts\n\n"
+            "*Note:* This command splits by text lines, so it works well for files with many lines even if the file size is small.",
             parse_mode="Markdown",
             reply_to_message_id=update.message.message_id
         )
         return
     
-    # Get split size from args
-    split_size_mb = 15  # Default 15MB
+    # Get split count from args
+    split_lines = 500  # Default 500 lines
     if context.args:
         try:
-            split_size_mb = int(context.args[0])
-            if split_size_mb < 1:
-                split_size_mb = 1
-            elif split_size_mb > 50:
-                split_size_mb = 50  # Max 50MB per part
+            split_lines = int(context.args[0])
+            if split_lines < 1:
+                split_lines = 1
         except:
             pass
     
-    split_size = split_size_mb * 1024 * 1024  # Convert to bytes
-    
     replied_msg = update.message.reply_to_message
     doc = replied_msg.document
-    file_size = doc.file_size
-    file_size_mb = file_size / (1024 * 1024)
     file_name = doc.file_name or "file"
     
-    # Check if splitting is needed
-    if file_size <= split_size:
-        await update.message.reply_text(
-            f"ℹ️ File is only {file_size_mb:.1f}MB, no splitting needed.\n"
-            f"You can use it directly with /sort, /clean, or /filter.",
-            reply_to_message_id=update.message.message_id
-        )
-        return
-    
-    num_parts = (file_size + split_size - 1) // split_size
-    
     status_msg = await update.message.reply_text(
-        f"✂️ Splitting file...\n\n"
+        f"✂️ Preparing to split file...\n\n"
         f"📁 File: {file_name}\n"
-        f"📊 Size: {file_size_mb:.1f}MB\n"
-        f"📦 Parts: {num_parts} × {split_size_mb}MB",
+        f"📄 Lines per part: {split_lines}",
         reply_to_message_id=update.message.message_id
     )
     
     try:
         # Download the file
         await status_msg.edit_text(f"📥 Downloading {file_name}...")
-        
         file = await context.bot.get_file(doc.file_id)
         file_bytes = await file.download_as_bytearray()
         
-        await status_msg.edit_text(f"✂️ Splitting into {num_parts} parts...")
+        # Decode the file as UTF-8 text and preserve line endings
+        text = file_bytes.decode('utf-8', errors='replace')
+        lines = text.splitlines(keepends=True)
+        total_lines = len(lines)
         
-        # Split and send parts
+        if total_lines == 0:
+            await status_msg.edit_text(
+                "⚠️ The file appears to be empty, nothing to split."
+            )
+            return
+        
+        num_parts = (total_lines + split_lines - 1) // split_lines
+        
+        if total_lines <= split_lines:
+            await status_msg.edit_text(
+                f"ℹ️ File has {total_lines} line(s), which fits into a single part.\n"
+                f"No split needed."
+            )
+            return
+        
+        await status_msg.edit_text(
+            f"✂️ Splitting into {num_parts} parts...\n\n"
+            f"📁 File: {file_name}\n"
+            f"📄 Total lines: {total_lines}\n"
+            f"📦 Parts: {num_parts}"
+        )
+        
         base_name = file_name.rsplit('.', 1)[0] if '.' in file_name else file_name
         extension = '.' + file_name.rsplit('.', 1)[1] if '.' in file_name else '.txt'
         
         for i in range(num_parts):
-            start = i * split_size
-            end = min((i + 1) * split_size, len(file_bytes))
-            part_data = file_bytes[start:end]
-            part_size_mb = len(part_data) / (1024 * 1024)
-            
+            part_lines = lines[i * split_lines:(i + 1) * split_lines]
+            part_text = ''.join(part_lines)
             part_name = f"{base_name}_part{i+1}of{num_parts}{extension}"
             
             await update.message.reply_document(
-                document=BytesIO(bytes(part_data)),
+                document=BytesIO(part_text.encode('utf-8')),
                 filename=part_name,
-                caption=f"📦 Part {i+1}/{num_parts} ({part_size_mb:.1f}MB)\n"
-                        f"Use with /sort, /clean, or /filter"
+                caption=(
+                    f"📦 Part {i+1}/{num_parts} - {len(part_lines)} lines\n"
+                    f"Use with /sort, /clean, or /filter"
+                )
             )
         
         await status_msg.edit_text(
             f"✅ Split complete!\n\n"
-            f"📁 Original: {file_name} ({file_size_mb:.1f}MB)\n"
-            f"📦 Created: {num_parts} parts × {split_size_mb}MB each\n\n"
-            f"💡 Reply to each part with /sort, /clean, or /filter"
+            f"📁 Original: {file_name}\n"
+            f"📄 Total lines: {total_lines}\n"
+            f"📦 Created: {num_parts} parts"
         )
         
     except Exception as e:
