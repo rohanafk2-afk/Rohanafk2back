@@ -1180,6 +1180,43 @@ def killer_cleanup_driver(driver):
             pass
     gc.collect()
 
+def close_all_selenium_browsers() -> int:
+    """Terminate active Selenium Chrome/Chromedriver processes."""
+    killed = 0
+    patterns = ("chromedriver", "chrome", "google-chrome")
+    for proc in psutil.process_iter(["name", "exe", "cmdline"]):
+        try:
+            info = proc.info
+            name = (info.get("name") or "").lower()
+            exe = (info.get("exe") or "").lower()
+            cmdline = " ".join(info.get("cmdline") or []).lower()
+            is_selenium = False
+
+            if "chromedriver" in name or "chromedriver" in exe or "chromedriver" in cmdline:
+                is_selenium = True
+            elif "chrome" in name or "google-chrome" in exe or "chrome" in exe or "chrome" in cmdline:
+                if "--headless" in cmdline or "--disable-gpu" in cmdline or "--remote-debugging-port" in cmdline or "--disable-dev-shm-usage" in cmdline:
+                    is_selenium = True
+
+            if not is_selenium:
+                continue
+
+            try:
+                proc.kill()
+            except Exception:
+                continue
+
+            killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+        except Exception:
+            continue
+
+    global _browser_semaphore
+    _browser_semaphore = threading.Semaphore(MAX_CONCURRENT_BROWSERS)
+    gc.collect()
+    return killed
+
 # ==== 2.3 Browser Command Health Tracking ====
 BROWSER_CMDS = ("kill", "kd", "ko", "zz", "dd", "st", "bt", "chk")
 _health_lock = threading.Lock()
@@ -3113,24 +3150,36 @@ async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Args
     arg0 = (context.args[0].lower().strip() if context.args else "")
     force = arg0 in ("force", "deep", "test")
+    global _last_selenium_health  # type: ignore[name-defined]
 
-    # Reset mode (historical counters only)
+    # Reset mode (historical counters + browsers)
     if arg0 == "reset":
+        killed = close_all_selenium_browsers()
+        _last_selenium_health = {"ts": 0.0, "ok": False, "ms": None, "err": "reset"}
+
         if len(context.args) > 1:
             cmd_to_reset = context.args[1].lower().strip()
             if cmd_to_reset in BROWSER_CMDS:
                 reset_cmd_health(cmd_to_reset)
                 await _tg_call_with_retry(
                     update.message.reply_text,
-                    f"✅ Health stats reset for `/{cmd_to_reset}`",
+                    f"✅ Health stats reset for `/{cmd_to_reset}` and {killed} Selenium browser process(es) terminated.",
                     parse_mode="Markdown",
                     reply_to_message_id=update.message.message_id,
                 )
                 return
+            await _tg_call_with_retry(
+                update.message.reply_text,
+                f"⚠️ Unknown command `{cmd_to_reset}`. Use `/health reset` or `/health reset kd|ko|kill|zz|dd|st|bt|chk`.",
+                parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id,
+            )
+            return
+
         reset_cmd_health()
         await _tg_call_with_retry(
             update.message.reply_text,
-            "✅ All health stats have been reset!",
+            f"✅ All health stats have been reset and {killed} Selenium browser process(es) terminated.",
             reply_to_message_id=update.message.message_id,
         )
         return
@@ -3200,7 +3249,6 @@ async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 5) Selenium smoke test (cached unless forced)
     # Cache globals (module-level) for last selenium test
-    global _last_selenium_health  # type: ignore[name-defined]
     try:
         _last_selenium_health
     except Exception:
@@ -3318,7 +3366,7 @@ async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"⚕️ *Auto-repair flagged:* `/{', /'.join(repairs_needed)}`")
 
     lines.append("")
-    lines.append("🔧 *Admin:* `/health reset` | `/health deep` (force selenium)")
+    lines.append("🔧 *Admin:* `/health reset` | `/health reset <cmd>` | `/health deep` (force selenium)")
 
     await _tg_call_with_retry(
         status_msg.edit_text,
